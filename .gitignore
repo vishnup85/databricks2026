@@ -1,0 +1,31 @@
+# Local query/script outputs
+databricks_outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / AppKit (future app)
+node_modules/
+dist/
+build/
+.appkit/
+
+# Secrets & local config (NEVER commit)
+.databrickscfg
+.env
+.env.*
+*.pem
+*.key
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
