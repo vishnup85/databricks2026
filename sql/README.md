@@ -1,14 +1,18 @@
-# Facility Trust Desk — Data Pipeline (Silver & Gold)
+# Facility Trust Desk - Data Pipeline
 
-This folder holds the SQL that turns the **raw hackathon data** into clean, ready-to-use
+This folder holds the SQL that turns the raw hackathon data into clean, ready-to-use
 tables for the Track 1 "Facility Trust Desk" app.
 
-- **Raw data** lives in `databricks_virtue_foundation_dataset_dais_2026.virtue_foundation_dataset` (read-only).
-- **Our cleaned data** lives in the catalog `virtue_foundation_dataset_cleaned`, split into two schemas:
-  - `silver` = cleaned-up versions of the raw tables
-  - `gold` = final tables the app reads
+- Raw data lives in `databricks_virtue_foundation_dataset_dais_2026.virtue_foundation_dataset`
+  and is read-only.
+- Cleaned data lives in catalog `virtue_foundation_dataset_cleaned`.
+- We use two schemas:
+  - `silver` = cleaned and staged tables
+  - `gold` = serving tables the app and analysts read
 
-Think of it as: **raw → silver (clean it) → gold (make it useful)**.
+Think of it as:
+
+`raw -> silver (clean it) -> gold (serve it)`
 
 Run any script with:
 
@@ -16,190 +20,389 @@ Run any script with:
 databricks experimental aitools tools query --file .\sql\<file>.sql --output json --profile DEFAULT
 ```
 
-Always run Silver before Gold (Gold reads from Silver).
+Run scripts in numeric order.
 
----
+Note: scripts `07` and `08` live in the `silver` schema, but `07` intentionally depends on the
+gold heuristic baseline from script `06`, and script `10` rebuilds the final serving table after
+script `09`, so dependency order matters more than schema name.
 
-## SILVER — "clean the raw data"
+## Important design rule
 
-### 1. `silver.facilities_clean`  (script `01`)
-The raw `facilities` table is messy: everything is text, lists are stored as text, and some
-rows are broken. This script fixes that.
+The final trust tier remains fully deterministic.
 
-**What it changes:**
-- **Unpacks lists** — columns like `specialties`, `procedure`, `equipment`, `capability`, and
-  `source_urls` were stored as text like `["a","b"]`. We turn them into real lists.
-- **Fixes the pincode** — `address_zipOrPostcode` (text) becomes a real number `pincode`.
-- **Cleans up state names** — e.g. `Tamilnadu` → `Tamil Nadu`, `Orissa` → `Odisha`, and cities
-  used as states (`Mumbai`, `Pune`, `Chennai`…) are mapped to their real state.
-- **Counts the evidence** — adds `n_source_urls` (how many source links each facility has).
-- **Converts yes/no text to true/false** — `affiliated_staff_presence`, `custom_logo_presence`.
-- **Throws away broken rows** — keeps only real facility types (hospital, clinic, dentist, etc.);
-  drops ~150 blank or scrambled rows.
-- **Removes duplicates** — when the same facility appears twice (same `cluster_id`), keeps the
-  one with the most evidence.
-- **Pre-builds search text** — adds helper text columns (`spec_eq_text`, `claim_text`,
-  `prose_text`, `full_text`) so the scoring step later is simpler and faster.
+- `06_gold_facility_capability_assessment.sql` builds the heuristic baseline.
+- `10_gold_facility_capability_assessment.sql` rebuilds the final serving table from that
+  baseline plus any current LLM-reviewed sub-signals.
 
-**Result:** ~9,932 clean, unique facilities (from 10,088 raw rows).
+Scripts `07` to `10` add an optional LLM review layer for sub-signals such as:
 
-### 2. `silver.pincode_district`  (script `02`)
-The raw post-office table has many rows per pincode (one per local post office). The app only
-needs to know **which district a pincode is in**.
+- `claim_hit`
+- `prose_hit`
+- `screening_only`
+- `capability_scope`
+- `supporting_snippets`
 
-**What it changes:**
-- Groups by pincode and keeps **one district per pincode** (the most common one).
-- Standardizes district names (UPPERCASE, trimmed) and state names (Title Case).
+That LLM layer is auditable, versioned, and separate. It never writes the final trust tier
+directly; the final tier is still recomputed by deterministic SQL.
 
-**Result:** one clean row per pincode — used to find each facility's district.
+## Script-by-script overview
 
-### 3. `silver.nfhs_clean`  (script `03`)
-The raw NFHS-5 health survey has 100+ columns, and many numbers are "dirty" (e.g. `(29.5)`,
-`927 `, `*`). The app only needs a handful of them.
+### 1. `silver.facilities_clean` (`01_silver_facilities_clean.sql`)
 
-**What it changes:**
-- Picks a **focused set of useful indicators** (maternity, screening, insurance, chronic disease).
-- **Cleans the numbers** — removes footnote marks like `*`, `(`, `)` and extra spaces, then
-  converts them to real decimals.
-- Renames long column names to short, readable ones (e.g. `breast_exam_pct`).
-- Standardizes the district name so it can be matched to facilities.
+This cleans the raw `facilities` table.
 
-**Result:** 706 districts with clean, ready-to-use health numbers.
+What it does:
 
----
+- Parses JSON-like list columns such as `specialties`, `procedure`, `equipment`, `capability`,
+  `source_urls`, and `source_types`.
+- Casts numeric-looking fields such as `capacity` and `numberDoctors`.
+- Converts yes/no strings to booleans.
+- Repairs state names and parses `pincode`.
+- Drops obviously broken rows.
+- Deduplicates by `cluster_id`, keeping the richest-evidence row.
+- Builds helper text columns such as `claim_text`, `prose_text`, and `full_text`.
 
-## GOLD — "make it useful for the app"
+Result:
 
-### 4. `gold.facility_geo`  (script `04`)
-Connects each facility to its **district and state** using the pincode bridge.
+- about 9,932 clean, unique facilities from 10,088 raw rows
 
-**What it changes:**
-- Joins `facilities_clean` to `pincode_district` on pincode.
-- Adds `district_norm` and `state_name` to every facility.
-- If a pincode has no match, falls back to the facility's own cleaned state.
+### 2. `silver.pincode_district` (`02_silver_pincode_district.sql`)
 
-**Result:** every facility now has reliable location info (~96% get a district).
+This turns the raw post-office directory into a clean pincode-to-district bridge.
 
-### 5. `gold.district_need_index`  (script `05`)
-Turns the NFHS health numbers into a simple **"how much is this capability needed here?"** signal,
-so the app can prioritize districts with greater need.
+What it does:
 
-**What it changes:**
-- **Maternity need** — higher when fewer births happen in hospitals.
-- **Oncology screening gap** — higher when fewer women get cancer screenings.
-- **Disease burden** — hypertension, diabetes, and anaemia rates for context.
-- Keeps the raw numbers too, for drill-down.
+- keeps one district per pincode
+- standardizes district and state names
 
-**Result:** 706 districts with easy-to-read need scores. The app attaches these to the ranked list
-as a `need_score` (see "Extra signals the app uses" below) so a planner can sort by where a
-capability is most needed.
+Result:
 
-### 6. `gold.facility_capability_assessment`  (script `06`) — the main table
-This is the heart of the app. It answers: **"Can this facility actually do what it claims?"**
-for each of the six capabilities: **ICU, NICU, maternity, emergency, oncology, trauma.**
+- one clean row per pincode
 
-**What it does:**
-- Creates **one row per facility per capability** (so 6 rows per facility).
-- Looks for evidence of each capability in three places, strongest first:
-  1. **Structured** — coded specialties / equipment (strongest)
-  2. **Claim** — the facility's own capability statements (medium)
-  3. **Prose** — mentions in the description text (weakest)
-- Checks **corroboration** — does it have 3+ source links, an official website, and listed staff?
-- Applies **common-sense rules:**
-  - A small clinic or dentist claiming ICU / NICU / trauma / oncology is treated as suspicious.
-  - "Cancer **screening**" wording (without real cancer **treatment**) is not counted as oncology.
-- Gives each one a **trust signal**:
-  - **strong** — solid, well-supported evidence
-  - **partial** — some evidence, but not fully backed
-  - **weak_suspicious** — thin, prose-only, or implausible
-  - **no_claim** — no evidence of this capability
-- Adds a **score** (for ranking), a plain-language **explanation** of the rating, an **evidence
-  summary**, and the **citation links** so the app can show *why* a facility got its rating.
+### 3. `silver.nfhs_clean` (`03_silver_nfhs_clean.sql`)
 
-**Result:** ~59,592 rows (9,932 facilities × 6 capabilities) — this is what the app ranks,
-filters, and shows citations for.
+This cleans the NFHS-5 district health indicators.
 
----
+What it does:
 
-## How the trust score works
+- selects the subset of indicators needed for Track 1
+- strips dirty numeric characters such as `(`, `)`, `*`, and extra spaces
+- casts usable indicators to decimals
+- standardizes district names
 
-The score has two layers: first a **tier** (the bucket), then a **number** for ranking.
+Result:
 
-### The evidence flags (the ingredients)
-- **structured_hit** — capability term found in `specialties` + `equipment` (strongest channel)
-- **claim_hit** — found in the facility's own `capability` claims (medium)
-- **prose_hit** — found only in `description` / `procedure` free text (weakest)
-- **well_corroborated** — `n_source_urls >= 3` AND a real official website (non-empty and **not** the literal string `"null"`) AND affiliated staff present
-- **capacity_supported** — facility reports hospital-scale capacity (≥20 beds **or** ≥10 doctors, after outlier guards); surfaced as a signal badge
-- **implausible** — high-acuity capability (ICU/NICU/trauma/oncology) that is **not plausibly supported by capacity** (see plausibility note below)
-- **screening_only** — oncology special case: cancer mentioned, but no chemo / radio / treatment words
-- **recent_update** — `recency_of_page_update` parses to a date within the last 12 months (surfaced as a signal badge in the drill-down)
+- 706 clean district-level rows
 
-**Plausibility from capacity / doctors.** `implausible` no longer relies on facility *type* alone — it now reads `capacity_beds` and `num_doctors` (with outlier guards: beds kept only in 1–5000, doctors in 1–2000, so junk like 200,000 beds / 15,000 doctors is ignored). Coverage is sparse (~25% have beds, ~36% have doctors), so **missing values are neutral** — never a penalty. A high-acuity claim (ICU/NICU/trauma/oncology) is implausible when:
-- it's a non-hospital type (clinic/dentist/doctor/pharmacy) **and** shows no hospital-scale capacity — *unless* it reports real hospital-scale capacity, which **rescues** it from the flag; or
-- any facility (even a "hospital") has a **known, tiny** capacity (<5 beds and <2 doctors) that directly **contradicts** the claim.
+### 4. `gold.facility_geo` (`04_gold_facility_geo.sql`)
 
-The drill-down also exposes the sanitized `beds` and `num_doctors` inside `evidence_json` for inspection.
+This attaches cleaned geography to each facility.
 
-**Recency as a positive booster.** Only ~35% of facilities have a usable `recency_of_page_update` date (the rest are `"null"`/empty). Recency never affects the **tier**; it only nudges the numeric `score`: a page refreshed in the last 12 months earns **+10**, ranking it higher *within* its tier. Stale or missing dates are fully neutral (no penalty). The +10 bonus stays below the 30-point gap between tiers, so it can never push a facility across a tier boundary.
+What it does:
 
-### Tier (checked top-down, first match wins)
-Penalty/safety rules are checked **before** the positive rules:
+- joins facilities to the pincode bridge
+- adds canonical `district_norm` and `state_name`
+- falls back to the facility's own normalized state when pincode lookup is missing
 
-1. No evidence at all → **no_claim**
-2. Oncology screening-only (and no structured hit) → **weak_suspicious**
-3. Implausible (high-acuity at clinic/dentist/etc.) → **weak_suspicious**
-4. structured_hit **and** well_corroborated → **strong**
-5. structured_hit **or** claim_hit → **partial**
-6. prose_hit only → **weak_suspicious**
-7. otherwise → **no_claim**
+Result:
 
-### Score (for ranking within a tier)
+- almost every facility gets reliable state data, and most get district data
 
+### 5. `gold.district_need_index` (`05_gold_district_need_index.sql`)
+
+This creates district-level demand context.
+
+What it does:
+
+- builds maternity need from institutional-birth related indicators
+- builds oncology screening gap from cancer screening indicators
+- keeps disease-burden context such as hypertension, diabetes, and anaemia
+
+Result:
+
+- 706 districts with planner-facing need scores
+
+### 6. `gold.facility_capability_assessment_heuristic` (`06_gold_facility_capability_assessment.sql`)
+
+This is the heuristic baseline mart.
+
+It answers:
+
+`Can this facility actually do what it claims?`
+
+for each of the six Track 1 capabilities:
+
+- ICU
+- NICU
+- maternity
+- emergency
+- oncology
+- trauma
+
+What it does:
+
+- creates one row per `facility x capability`
+- looks for evidence in three channels:
+  - `structured_hit` from specialties and equipment
+  - `claim_hit` from the facility's own capability claims
+  - `prose_hit` from description and procedure text
+- checks corroboration using source count, official website, and staff presence
+- applies plausibility rules for high-acuity capabilities
+- treats oncology screening-only language as weaker than actual treatment capability
+- assigns:
+  - a deterministic `tier`
+  - a deterministic `score`
+  - a plain-language `explanation`
+  - facility-level citation URLs
+
+Result:
+
+- about 59,592 rows (9,932 facilities x 6 capabilities)
+
+### 7. `silver.facility_capability_llm_inputs` (`07_silver_facility_capability_llm_inputs.sql`)
+
+This is the prompt-ready handoff table for LLM review.
+
+What it does:
+
+- keeps the same one-row-per-`facility x capability` shape as the deterministic table
+- carries forward the deterministic baseline as:
+  - `heuristic_tier`
+  - `heuristic_score`
+  - `heuristic_explanation`
+  - `heuristic_*` evidence flags
+- packages the raw evidence the model should inspect:
+  - `capability`
+  - `specialties`
+  - `procedure`
+  - `equipment`
+  - `description`
+  - citation URLs and source types
+- computes `evidence_fingerprint`, a hash of the evidence snapshot
+- builds `llm_input_json`, a single export-friendly payload
+
+Why the fingerprint matters:
+
+- if the evidence stays the same, the fingerprint stays the same
+- model output can be tied to the exact evidence snapshot it reviewed
+- downstream tables can tell whether an LLM review is still current or has gone stale
+
+Note on citation quality:
+
+- Today we have facility-level URLs, but we do not store source-linked snippets or quote spans.
+- True external-URL citation grading is out of scope for this hackathon. The previous
+  `citation_support_quality` placeholders were removed so the schema does not carry fields the
+  data cannot honestly support.
+- LLM-derived `supporting_snippets` (quotes from the facility's own description / procedure text)
+  are still produced and surfaced in the app.
+
+### 8. `silver.facility_capability_llm_outputs_raw` (`08_silver_facility_capability_llm_outputs_raw.sql`)
+
+This is the append-only landing table for normalized LLM output.
+
+What it stores:
+
+- the row key: `unique_id`, `capability`
+- the `evidence_fingerprint` from script `07`
+- `prompt_version`
+- `model_name`
+- `model_version`
+- `run_id`
+- timestamps for source snapshot and inference
+- `raw_response_json`
+- `parsed_json`
+
+Expected `parsed_json` contract:
+
+```json
+{
+  "claim_hit": true,
+  "prose_hit": false,
+  "screening_only": false,
+  "capability_scope": "full_capability",
+  "supporting_snippets": [],
+  "confidence": 0.94,
+  "reasoning": "Short audit-friendly explanation."
+}
 ```
-score = tier_base + min(n_source_urls, 10) + (recent_update ? 10 : 0)
+
+Why this is `CREATE TABLE IF NOT EXISTS`:
+
+- model output is write-back data
+- we do not want the pipeline to wipe historical runs every time it is rebuilt
+
+### 9. `gold.facility_capability_llm_signals` (`09_gold_facility_capability_llm_signals.sql`)
+
+This is the typed serving table for LLM-reviewed sub-signals.
+
+What it does:
+
+- takes the latest normalized LLM output for each `facility x capability`
+- parses `parsed_json` into typed columns
+- joins the result back to every current row from script `07`
+
+What it adds:
+
+- `claim_hit_llm`
+- `prose_hit_llm`
+- `screening_only_llm`
+- `capability_scope_llm`
+- `supporting_snippets_llm`
+- `confidence_llm`
+- `reasoning_llm`
+
+Audit fields:
+
+- `has_llm_review`
+- `llm_review_status`
+  - `missing` = no review written back yet
+  - `current` = review matches the latest evidence fingerprint
+  - `stale` = review exists, but the facility evidence changed afterward
+- `current_evidence_fingerprint`
+- `reviewed_evidence_fingerprint`
+
+The deterministic baseline is kept alongside the LLM output:
+
+- `heuristic_tier`
+- `heuristic_score`
+- `heuristic_explanation`
+
+That makes comparison simple without ever letting the model overwrite the deterministic trust tier.
+
+### 10. `gold.facility_capability_assessment` (`10_gold_facility_capability_assessment.sql`)
+
+This is the final serving mart that the app reads.
+
+What it does:
+
+- starts from the heuristic baseline in script `06`
+- joins the latest parsed LLM sub-signals from script `09`
+- uses current LLM-reviewed `claim_hit`, `prose_hit`, `screening_only`, and `capability_scope`
+  when available
+- falls back to the heuristic flags when no current LLM review exists
+- deterministically recomputes:
+  - the final `tier`
+  - the final `score`
+  - the final plain-language `explanation`
+- preserves both heuristic and LLM audit columns side by side
+
+Important behavior:
+
+- `adjacent_service` caps a row at `weak_suspicious`
+- `screening_or_diagnostics_only` caps a row at `weak_suspicious`
+- the model still never assigns the tier directly; SQL does
+
+## How the deterministic trust score works
+
+The deterministic system has two layers:
+
+- a `tier` bucket
+- a numeric `score` used only for ranking within the bucket
+
+### Evidence flags
+
+- `structured_hit` = capability term found in specialties or equipment
+- `claim_hit` = found in the facility's own capability claims
+- `prose_hit` = found only in description or procedure free text
+- `well_corroborated` = at least 3 source URLs, a real official website, and affiliated staff
+- `capacity_supported` = hospital-scale capacity is reported
+- `implausible` = a high-acuity capability is not plausibly supported by facility scale
+- `screening_only` = oncology mention looks like screening, not treatment
+- `recent_update` = the facility page appears updated within the last 12 months
+
+### Tier rules
+
+Checked top-down:
+
+1. no evidence at all -> `no_claim`
+2. LLM scope says `screening_or_diagnostics_only` -> `weak_suspicious`
+3. LLM scope says `adjacent_service` -> `weak_suspicious`
+4. oncology screening-only without structured support -> `weak_suspicious`
+5. implausible high-acuity claim -> `weak_suspicious`
+6. structured evidence and strong corroboration -> `strong`
+7. structured evidence or direct claim -> `partial`
+8. prose-only mention -> `weak_suspicious`
+9. otherwise -> `no_claim`
+
+### Score rules
+
+```text
+score = tier_base + min(n_source_urls, 10) + recent_update_bonus
 ```
 
-| Tier | Base | + citations (0–10) | + recency (0 or 10) | Range |
-| --- | ---: | ---: | ---: | ---: |
-| strong | 90 | up to +10 | +10 if fresh | 90–110 |
-| partial | 60 | up to +10 | +10 if fresh | 60–80 |
-| weak_suspicious | 30 | up to +10 | +10 if fresh | 30–50 |
-| no_claim | 0 | up to +10 | +10 if fresh | 0–20 |
+Tier bases:
 
-The tier dominates ordering; within a tier, more source URLs and a recently-updated page rank higher.
-Both bonuses stay below the 30-point tier gap, so they only re-rank within a tier.
+- `strong` = 90
+- `partial` = 60
+- `weak_suspicious` = 30
+- `no_claim` = 0
 
-> Note: the citation bonus counts URLs but not their **quality** (a Facebook link counts the same as
-> an official site). Weighting by `source_types` is a planned improvement.
+Bonuses:
 
-> Data-quality guard: a facility whose `official_website` is blank or the literal string `"null"`
-> no longer counts as having a website, so it can't be pushed to **strong** on a fake corroboration.
+- up to +10 for citation count
+- +10 for a recent page update
 
-### Extra signals the app uses
-- **explanation** — a one-line, plain-language reason for the tier, stored on each row of
-  `facility_capability_assessment` (e.g. *"Listed in structured specialties/equipment and
-  well-corroborated (12 sources, official website, affiliated staff)."*). Shown in the drill-down.
-- **need_score** — the district NFHS need from `district_need_index`, attached at query time:
-  maternity / nicu use `maternity_need`, oncology uses `oncology_screening_gap`, and other
-  capabilities have no need signal (NFHS doesn't meaningfully cover them). Lets the planner sort the
-  ranked list by *where the capability is most needed*.
+Those bonuses stay below the 30-point tier gap, so they only reorder rows within a tier.
 
----
+## Citation-quality note
+
+The deterministic score uses citation count, not external-URL citation quality, and that is by
+design for this hackathon: the dataset stores facility-level URLs but no per-claim snippets, so any
+"this URL supports this capability" score would be guesswork. We surface LLM-derived
+`supporting_snippets` (quotes from the facility's own description / procedure text) instead, which
+are real evidence rather than a manufactured citation grade.
+
+## Using the LLM layer
+
+1. Run scripts `01` through `07` to rebuild the deterministic tables and the prompt-ready inputs.
+2. Batch the rows from `silver.facility_capability_llm_inputs` through your model of choice and
+   append normalized results into `silver.facility_capability_llm_outputs_raw`.
+3. Run scripts `09` and `10` to refresh the parsed LLM signals and the final serving table.
+
+If the facility evidence changes, rerun `07` before refreshing `09`. The fingerprint and
+`llm_review_status` fields will tell you whether an older model review is still current.
+
+There is a checked-in Python helper for step 2:
+
+- `run_llm_capability_review.py`
+
+It reads from the input table, calls `databricks serving-endpoints query`, and writes normalized
+rows into `silver.facility_capability_llm_outputs_raw` using the Databricks CLI profile you pass in.
+Use `--all-pending` to sweep every pending `facility x capability` row, or `--capability` for a
+smaller targeted batch.
 
 ## How the tables connect
 
-```
-raw.facilities ─┐
-                ├─► silver.facilities_clean ─► gold.facility_geo ─┐
-raw.pincode  ───┘            │                                   ├─► gold.facility_capability_assessment
-                             └───────────────────────────────────┘
-raw.nfhs ───────► silver.nfhs_clean ─► gold.district_need_index
-raw.pincode ────► silver.pincode_district
+```text
+raw.facilities
+  -> silver.facilities_clean
+    -> gold.facility_geo
+    -> gold.facility_capability_assessment_heuristic
+      -> silver.facility_capability_llm_inputs
+        -> gold.facility_capability_llm_signals
+          -> gold.facility_capability_assessment
+
+raw.pincode
+  -> silver.pincode_district
+    -> gold.facility_geo
+
+raw.nfhs
+  -> silver.nfhs_clean
+    -> gold.district_need_index
+
+silver.facility_capability_llm_outputs_raw
+  -> gold.facility_capability_llm_signals
+    -> gold.facility_capability_assessment
 ```
 
-## Editing the pipeline
-- **Add/remove a capability or change scoring:** edit `06`.
-- **Add/remove a cleaned field or fix state names:** edit `01`.
-- **Add a health indicator:** edit `03`, then `05`.
-- After editing, re-run that script (and any Gold script that depends on it).
+## Editing guide
+
+- Change heuristic capability matching / baseline scoring in `06`.
+- Change prompt packaging or the evidence fingerprint in `07`.
+- Change the write-back JSON contract in `08`.
+- Change typed parsing of LLM output in `09`.
+- Change how current LLM sub-signals feed the final deterministic serving tier in `10`.
+- Change facility cleaning in `01`.
+- Change district need indicators in `03` and `05`.
+
+After edits, rerun the changed script and any downstream scripts that depend on it.

@@ -1,0 +1,35 @@
+Review whether facility "$facility_name" (unique_id "$unique_id") is truly claiming capability
+"$capability".
+
+You are only setting sub-signals, not the final trust tier.
+
+Definitions:
+- `claim_hit`: true only if the facility explicitly claims this capability or a direct equivalent.
+  A vague mention of a related service is not enough.
+- `prose_hit`: true if the free-text description or procedure text materially supports the
+  capability, even if the structured claim is weak.
+- `screening_only`: true only when the evidence is limited to screening, diagnostics, consultation,
+  or awareness rather than the full capability. For non-oncology capabilities this will usually be
+  false.
+- `capability_scope`: choose one short label:
+  - `full_capability`
+  - `adjacent_service`
+  - `screening_or_diagnostics_only`
+  - `unclear`
+- `supporting_snippets`: up to 5 short snippets copied only from the evidence provided here.
+- `confidence`: a number from 0 to 1.
+- `reasoning`: one short explanation that references only the provided evidence.
+
+Return JSON with exactly these keys:
+{
+  "claim_hit": true,
+  "prose_hit": false,
+  "screening_only": false,
+  "capability_scope": "full_capability",
+  "supporting_snippets": [],
+  "confidence": 0.94,
+  "reasoning": "Short audit-friendly explanation."
+}
+
+Evidence payload:
+$llm_input_json

@@ -4,10 +4,6 @@ bundle:
 variables:
   sql_warehouse_id:
     description: SQL Warehouse ID
-  postgres_branch:
-    description: Lakebase Postgres branch resource name
-  postgres_database:
-    description: Lakebase Postgres database resource name
 
 resources:
   apps:
@@ -25,11 +21,6 @@ resources:
           sql_warehouse:
             id: ${var.sql_warehouse_id}
             permission: CAN_USE
-        - name: postgres
-          postgres:
-            branch: ${var.postgres_branch}
-            database: ${var.postgres_database}
-            permission: CAN_CONNECT_AND_CREATE
 
 targets:
   default:
@@ -39,5 +30,3 @@ targets:
 
     variables:
       sql_warehouse_id: 1b2d6ee9a64f1fca
-      postgres_branch: projects/facility-trust-desk/branches/production
-      postgres_database: projects/facility-trust-desk/branches/production/databases/databricks-postgres

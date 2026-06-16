@@ -10,7 +10,7 @@ Usage (in a Databricks notebook, where `spark` already exists):
 
     get_states().display()
     capability_ranked("icu", "Maharashtra").display()
-    facility_detail("e78e7ba5-ee36-41be-8bd9-b3ab26c4f665").display()
+    facility_detail("e78e7ba5-ee36-41be-8bd9-b3ab26c4f665", "icu").display()
 """
 
 from __future__ import annotations
@@ -53,18 +53,22 @@ def get_states(spark: SparkSession | None = None) -> DataFrame:
 def capability_ranked(
     capability: str,
     state: str = "All",
+    tier: str = "All",
     spark: SparkSession | None = None,
 ) -> DataFrame:
-    """Facilities for a capability + region, best evidence first (capability_ranked.sql).
+    """Facilities for a capability + region + trust tier (capability_ranked.sql).
 
-    Pass state="All" (default) to skip the region filter.
+    Pass state="All" or tier="All" to skip those filters.
+    tier="All" excludes no_claim rows; pass tier="no_claim" to list those only.
     """
     spark = spark or _spark()
-    df = spark.table(TABLE).where(
-        (F.col("capability") == capability) & (F.col("tier") != "no_claim")
-    )
+    df = spark.table(TABLE).where(F.col("capability") == capability)
     if state != "All":
         df = df.where(F.col("state_name") == state)
+    if tier == "All":
+        df = df.where(F.col("tier") != "no_claim")
+    else:
+        df = df.where(F.col("tier") == tier)
 
     return (
         df.select(
@@ -82,12 +86,12 @@ def capability_ranked(
     )
 
 
-def facility_detail(unique_id: str, spark: SparkSession | None = None) -> DataFrame:
-    """All capability assessments + citations for one facility (facility_detail.sql)."""
+def facility_detail(unique_id: str, capability: str, spark: SparkSession | None = None) -> DataFrame:
+    """One capability assessment + citations for a facility (matches facility_detail.sql)."""
     spark = spark or _spark()
     return (
         spark.table(TABLE)
-        .where(F.col("unique_id") == unique_id)
+        .where((F.col("unique_id") == unique_id) & (F.col("capability") == capability))
         .select(
             "capability",
             "tier",
@@ -99,5 +103,4 @@ def facility_detail(unique_id: str, spark: SparkSession | None = None) -> DataFr
             "district_norm",
             "state_name",
         )
-        .orderBy(_tier_rank().asc())
     )

@@ -1,5 +1,6 @@
 -- @param unique_id STRING
--- All capability assessments + citations for one facility (drill-down view).
+-- @param capability STRING
+-- Capability assessment + citations for one facility (drill-down view).
 -- Joins silver for the raw evidence content (specialties / capabilities / equipment).
 SELECT
   a.capability,
@@ -20,4 +21,4 @@ FROM virtue_foundation_dataset_cleaned.gold.facility_capability_assessment a
 LEFT JOIN virtue_foundation_dataset_cleaned.silver.facilities_clean f
   ON a.unique_id = f.unique_id
 WHERE a.unique_id = :unique_id
-ORDER BY CASE a.tier WHEN 'strong' THEN 1 WHEN 'partial' THEN 2 WHEN 'weak_suspicious' THEN 3 ELSE 4 END;
+  AND a.capability = :capability;

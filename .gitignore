@@ -26,6 +26,18 @@ build/
 .idea/
 .DS_Store
 Thumbs.db
+.history/
+Untitled
+
+# Office lock files
+~$*
 
 # Logs
 *.log
+llm_review_failures.jsonl
+
+# Local scratch / temp
+tmp/
+_tmp_*.sql
+playwright-report/
+test-results/

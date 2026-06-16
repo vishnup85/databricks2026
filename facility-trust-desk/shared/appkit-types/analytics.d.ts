@@ -12,6 +12,8 @@ declare module "@databricks/appkit-ui/react" {
           capability: SQLStringMarker;
           /** STRING - use sql.string() */
           state: SQLStringMarker;
+          /** STRING - use sql.string() */
+          tier: SQLStringMarker;
         };
         result: Array<{
           /** @sqlType STRING */
@@ -30,8 +32,6 @@ declare module "@databricks/appkit-ui/react" {
           score: number;
           /** @sqlType INT */
           n_source_urls: number;
-          /** @sqlType DOUBLE */
-          need_score: number;
         }>;
       };
     facility_detail: {
@@ -39,6 +39,8 @@ declare module "@databricks/appkit-ui/react" {
         parameters: {
           /** STRING - use sql.string() */
           unique_id: SQLStringMarker;
+          /** STRING - use sql.string() */
+          capability: SQLStringMarker;
         };
         result: Array<{
           /** @sqlType STRING */

@@ -25,14 +25,24 @@ import {
   TableRow,
 } from '@databricks/appkit-ui/react';
 import { sql } from '@databricks/appkit-ui/js';
-import { getErrorMessage, overrideKey, type Override, useSharedOverrides } from '../lib/trustDeskOverrides';
+import {
+  BedDouble,
+  Building2,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  ChevronsUpDown,
+  ExternalLink,
+  MapPin,
+  MousePointerClick,
+  Sparkles,
+  Stethoscope,
+} from 'lucide-react';
+import { getErrorMessage, overrideKey, type Override, usePlannerOverrides } from '../lib/trustDeskOverrides';
 
 const CAPABILITIES = ['icu', 'nicu', 'maternity', 'emergency', 'oncology', 'trauma'];
 const TABLE_SKELETON_KEYS = ['table-row-1', 'table-row-2', 'table-row-3', 'table-row-4', 'table-row-5'];
 const DETAIL_SKELETON_KEYS = ['detail-card-1', 'detail-card-2', 'detail-card-3', 'detail-card-4'];
-
-// Capabilities NFHS-5 meaningfully covers (others have no district "need" signal).
-const NEED_CAPS = new Set(['maternity', 'nicu', 'oncology']);
 
 // Trust tier -> human label + badge colour. `short` is used in the dense table,
 // `label` in the roomier drill-down cards.
@@ -86,29 +96,73 @@ function TierBadge({ tier, compact }: { tier: string; compact?: boolean }) {
   return <Badge className={t.cls}>{compact ? t.short : t.label}</Badge>;
 }
 
+type SortKey = 'name' | 'facility_type' | 'district_norm' | 'tier' | 'n_source_urls';
+type SortDir = 'asc' | 'desc';
+type RankedRow = {
+  unique_id: string;
+  name: string;
+  facility_type: string;
+  district_norm: string;
+  state_name: string;
+  tier: string;
+  score: number;
+  n_source_urls: number;
+};
+
+// Tier rank for sorting: strong evidence > partial > weak > no claim.
+const TIER_RANK: Record<string, number> = {
+  strong: 0,
+  partial: 1,
+  weak_suspicious: 2,
+  no_claim: 3,
+};
+
+function compareRows(a: RankedRow, b: RankedRow, key: SortKey, dir: SortDir): number {
+  const mul = dir === 'asc' ? 1 : -1;
+  if (key === 'tier') {
+    // Trust column sorts by tier rank, breaking ties with score (always strongest first within a tier).
+    const tierDiff = (TIER_RANK[a.tier] ?? 99) - (TIER_RANK[b.tier] ?? 99);
+    if (tierDiff !== 0) return tierDiff * mul;
+    return (b.score - a.score) * mul;
+  }
+  if (key === 'n_source_urls') {
+    return (a.n_source_urls - b.n_source_urls) * mul;
+  }
+  const av = String((a as Record<string, unknown>)[key] ?? '').toLowerCase();
+  const bv = String((b as Record<string, unknown>)[key] ?? '').toLowerCase();
+  return av.localeCompare(bv) * mul;
+}
+
 export function TrustDeskPage() {
   const [capability, setCapability] = useState('maternity');
   const [state, setState] = useState('All');
-  const [sortBy, setSortBy] = useState<'trust' | 'need'>('trust');
+  const [trustTier, setTrustTier] = useState('All');
   const [selected, setSelected] = useState<{ id: string; name: string } | null>(null);
-  const { overrides, loadError, saveOverride, clearOverride } = useSharedOverrides();
+  const [sortKey, setSortKey] = useState<SortKey>('tier');
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
+  const { overrides, loadError, saveOverride, clearOverride } = usePlannerOverrides();
 
   const states = useAnalyticsQuery('states', {});
   const ranked = useAnalyticsQuery('capability_ranked', {
     capability: sql.string(capability),
     state: sql.string(state),
+    tier: sql.string(trustTier),
   });
 
-  const hasNeed = NEED_CAPS.has(capability);
+  const rows = useMemo<RankedRow[]>(() => {
+    const data = (ranked.data ?? []) as RankedRow[];
+    return [...data].sort((a, b) => compareRows(a, b, sortKey, sortDir));
+  }, [ranked.data, sortKey, sortDir]);
 
-  // Server returns trust order (tier, then score). Re-sort client-side for "need".
-  const rows = useMemo(() => {
-    const data = ranked.data ?? [];
-    if (sortBy === 'need' && hasNeed) {
-      return [...data].sort((a, b) => (b.need_score ?? -1) - (a.need_score ?? -1) || b.score - a.score);
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((d: SortDir) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      // Default direction per column type — text sorts A→Z, numeric/tier sorts best-first.
+      setSortDir(key === 'name' || key === 'facility_type' || key === 'district_norm' ? 'asc' : key === 'tier' ? 'asc' : 'desc');
     }
-    return data;
-  }, [ranked.data, sortBy, hasNeed]);
+  };
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
@@ -148,20 +202,22 @@ export function TrustDeskPage() {
               </SelectContent>
             </Select>
           </div>
-          {hasNeed && (
-            <div className="space-y-2 w-48">
-              <Label>Sort by</Label>
-              <Select value={sortBy} onValueChange={(v) => setSortBy(v as 'trust' | 'need')}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="trust">Trust (default)</SelectItem>
-                  <SelectItem value="need">District need</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+          <div className="space-y-2 w-64">
+            <Label>Trust</Label>
+            <Select value={trustTier} onValueChange={setTrustTier}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All with evidence</SelectItem>
+                {TIER_ORDER.map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {TIER[t].label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </CardContent>
       </Card>
 
@@ -169,6 +225,7 @@ export function TrustDeskPage() {
         <CardHeader>
           <CardTitle className="capitalize">
             {capability} facilities {state !== 'All' ? `in ${state}` : ''}
+            {trustTier !== 'All' ? ` · ${TIER[trustTier]?.label ?? trustTier}` : ''}
             {ranked.data ? ` (${ranked.data.length})` : ''}
           </CardTitle>
         </CardHeader>
@@ -190,74 +247,124 @@ export function TrustDeskPage() {
             <div className="text-destructive bg-destructive/10 p-3 rounded-md">Error: {ranked.error}</div>
           )}
           {ranked.data && rows.length === 0 && (
-            <div className="text-muted-foreground">No facilities claim this capability here.</div>
+            <div className="text-muted-foreground">
+              No facilities match this capability, region, and trust filter.
+            </div>
           )}
           {rows.length > 0 && (
-            <Table className="w-full table-fixed">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className={hasNeed ? 'w-[30%]' : 'w-[36%]'}>Facility</TableHead>
-                  <TableHead className="w-[12%]">Type</TableHead>
-                  <TableHead className="w-[18%]">District</TableHead>
-                  <TableHead className="w-[14%]">Trust</TableHead>
-                  <TableHead
-                    className="w-[8%] text-right"
-                    title="Ranking heuristic used to order facilities within a tier — not a quality rating"
-                  >
-                    Rank
-                  </TableHead>
-                  {hasNeed && <TableHead className="w-[8%] text-right">Need</TableHead>}
-                  <TableHead className="w-[10%] text-right">Sources</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map((f) => (
-                  <TableRow
-                    key={f.unique_id}
-                    className="cursor-pointer"
-                    onClick={() => setSelected({ id: f.unique_id, name: f.name })}
-                  >
-                    <TableCell className="font-medium whitespace-normal break-words">{f.name}</TableCell>
-                    <TableCell className="text-muted-foreground whitespace-normal break-words capitalize">
-                      {f.facility_type}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground whitespace-normal break-words">
-                      {f.district_norm}
-                    </TableCell>
-                    <TableCell>
-                      <TierBadge tier={f.tier} compact />
-                      {overrides[overrideKey(f.unique_id, capability)] && (
-                        <span className="mt-0.5 block text-[10px] font-medium text-amber-600">planner override</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">{f.score}</TableCell>
-                    {hasNeed && (
-                      <TableCell className="text-right">
-                        {f.need_score != null ? Math.round(f.need_score) : '—'}
-                      </TableCell>
-                    )}
-                    <TableCell className="text-right">{f.n_source_urls}</TableCell>
+            <>
+              <p className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                <MousePointerClick className="h-3.5 w-3.5" aria-hidden="true" />
+                Click any row to view evidence, citations, and override controls.
+              </p>
+              <Table className="w-full table-fixed">
+                <TableHeader>
+                  <TableRow>
+                    <SortableHead
+                      width="w-[36%]"
+                      label="Facility"
+                      sortKey="name"
+                      activeKey={sortKey}
+                      activeDir={sortDir}
+                      onSort={toggleSort}
+                    />
+                    <SortableHead
+                      width="w-[12%]"
+                      label="Type"
+                      sortKey="facility_type"
+                      activeKey={sortKey}
+                      activeDir={sortDir}
+                      onSort={toggleSort}
+                    />
+                    <SortableHead
+                      width="w-[22%]"
+                      label="District"
+                      sortKey="district_norm"
+                      activeKey={sortKey}
+                      activeDir={sortDir}
+                      onSort={toggleSort}
+                    />
+                    <SortableHead
+                      width="w-[16%]"
+                      label="Trust"
+                      sortKey="tier"
+                      activeKey={sortKey}
+                      activeDir={sortDir}
+                      onSort={toggleSort}
+                    />
+                    <SortableHead
+                      width="w-[10%]"
+                      label="Sources"
+                      sortKey="n_source_urls"
+                      activeKey={sortKey}
+                      activeDir={sortDir}
+                      onSort={toggleSort}
+                      align="right"
+                    />
+                    <TableHead className="w-[4%]" aria-label="Open details" />
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {rows.map((f: RankedRow) => (
+                    <TableRow
+                      key={f.unique_id}
+                      className="group cursor-pointer hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none"
+                      onClick={() => setSelected({ id: f.unique_id, name: f.name })}
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setSelected({ id: f.unique_id, name: f.name });
+                        }
+                      }}
+                      aria-label={`View evidence for ${f.name}`}
+                    >
+                      <TableCell className="font-medium whitespace-normal break-words">{f.name}</TableCell>
+                      <TableCell className="text-muted-foreground whitespace-normal break-words capitalize">
+                        {f.facility_type}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground whitespace-normal break-words">
+                        {f.district_norm}
+                      </TableCell>
+                      <TableCell>
+                        <TierBadge tier={f.tier} compact />
+                        {overrides[overrideKey(f.unique_id, capability)] && (
+                          <span className="mt-0.5 block text-[10px] font-medium text-amber-600">local override</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">{f.n_source_urls}</TableCell>
+                      <TableCell className="text-right text-muted-foreground">
+                        <ChevronRight
+                          className="ml-auto h-4 w-4 transition-transform group-hover:translate-x-0.5 group-hover:text-foreground"
+                          aria-hidden="true"
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </>
           )}
         </CardContent>
       </Card>
 
       <Sheet open={!!selected} onOpenChange={(open) => !open && setSelected(null)}>
-        <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
-          <SheetHeader>
-            <SheetTitle>{selected?.name}</SheetTitle>
+        <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-xl">
+          <SheetHeader className="shrink-0 space-y-1 border-b px-6 py-5 pr-12 text-left">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Facility evidence</p>
+            <SheetTitle className="text-lg leading-snug">{selected?.name}</SheetTitle>
           </SheetHeader>
-          {selected && (
-            <FacilityDetail
-              uniqueId={selected.id}
-              overrides={overrides}
-              onSaveOverride={saveOverride}
-              onClearOverride={clearOverride}
-            />
-          )}
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+            {selected && (
+              <FacilityDetail
+                uniqueId={selected.id}
+                focusCapability={capability}
+                overrides={overrides}
+                onSaveOverride={saveOverride}
+                onClearOverride={clearOverride}
+              />
+            )}
+          </div>
         </SheetContent>
       </Sheet>
     </div>
@@ -266,58 +373,84 @@ export function TrustDeskPage() {
 
 function FacilityDetail({
   uniqueId,
+  focusCapability,
   overrides,
   onSaveOverride,
   onClearOverride,
 }: {
   uniqueId: string;
+  focusCapability: string;
   overrides: Record<string, Override>;
   onSaveOverride: (id: string, cap: string, tier: string, note: string) => Promise<void>;
   onClearOverride: (id: string, cap: string) => Promise<void>;
 }) {
   const { data, loading, error } = useAnalyticsQuery('facility_detail', {
     unique_id: sql.string(uniqueId),
+    capability: sql.string(focusCapability),
   });
 
   if (loading)
     return (
-      <div className="mt-4 space-y-2">
+      <div className="space-y-3">
         {DETAIL_SKELETON_KEYS.map((key) => (
-          <Skeleton key={key} className="h-16 w-full" />
+          <Skeleton key={key} className="h-20 w-full rounded-lg" />
         ))}
       </div>
     );
-  if (error) return <div className="mt-4 text-destructive">Error: {error}</div>;
-  if (!data || data.length === 0) return <div className="mt-4 text-muted-foreground">No data.</div>;
+  if (error) return <div className="text-destructive text-sm">Error: {error}</div>;
+  if (!data || data.length === 0) {
+    return (
+      <div className="text-muted-foreground text-sm">
+        No assessment data for <span className="capitalize">{focusCapability}</span> at this facility.
+      </div>
+    );
+  }
 
   const head = data[0];
+  const assessment = head;
   const specialties = asJson<string[]>(head.specialties_json) ?? [];
   const capabilities = asJson<string[]>(head.capabilities_json) ?? [];
   const equipment = asJson<string[]>(head.equipment_json) ?? [];
+  const hasProfileBadges = capabilities.length > 0 || specialties.length > 0 || equipment.length > 0;
+  const trustSummary = buildTrustSummary(assessment, uniqueId, overrides);
 
   return (
-    <div className="mt-4 space-y-4">
-      <p className="text-sm text-muted-foreground">
-        {head.facility_type} · {head.district_norm}, {head.state_name}
-        {head.num_doctors ? ` · ${head.num_doctors} doctors` : ''}
-        {head.capacity_beds ? ` · ${head.capacity_beds} beds` : ''}
-      </p>
+    <div className="space-y-6">
+      <FacilityMeta
+        facilityType={head.facility_type}
+        district={head.district_norm}
+        state={head.state_name}
+        numDoctors={head.num_doctors}
+        capacityBeds={head.capacity_beds}
+      />
 
-      <BadgeList title="Stated capabilities" items={capabilities} />
-      <BadgeList title="Specialties" items={specialties} />
-      <BadgeList title="Equipment" items={equipment} />
+      <TrustSummaryCard summary={trustSummary} />
 
-      <div className="border-t pt-3 space-y-4">
-        {data.map((row) => (
-          <CapabilityCard
-            key={row.capability}
-            row={row}
-            override={overrides[overrideKey(uniqueId, row.capability)]}
-            onSave={(tier, note) => onSaveOverride(uniqueId, row.capability, tier, note)}
-            onClear={() => onClearOverride(uniqueId, row.capability)}
-          />
-        ))}
-      </div>
+      {hasProfileBadges && (
+        <section className="space-y-3 rounded-lg border bg-muted/20 p-4">
+          <h3 className="text-sm font-semibold">Facility profile</h3>
+          <div className="space-y-3">
+            <BadgeList title="Stated capabilities" items={capabilities} compact />
+            <BadgeList title="Specialties" items={specialties} compact />
+            <BadgeList title="Equipment" items={equipment} compact />
+          </div>
+        </section>
+      )}
+
+      <section className="space-y-3">
+        <div className="space-y-0.5">
+          <h3 className="text-sm font-semibold capitalize">{focusCapability} evidence</h3>
+          <p className="text-xs text-muted-foreground">
+            Matched signals, supporting snippets, source links, and override controls.
+          </p>
+        </div>
+        <CapabilityCard
+          row={assessment}
+          override={overrides[overrideKey(uniqueId, focusCapability)]}
+          onSave={(tier, note) => onSaveOverride(uniqueId, focusCapability, tier, note)}
+          onClear={() => onClearOverride(uniqueId, focusCapability)}
+        />
+      </section>
     </div>
   );
 }
@@ -329,6 +462,80 @@ type DetailRow = {
   evidence_json: string;
   citation_urls_json: string;
 };
+
+type TrustSummary = {
+  focusCapability: string;
+  focusTier: string;
+  hasLocalOverride: boolean;
+  detail: string;
+  source: 'llm' | 'heuristic' | 'none';
+};
+
+function effectiveTier(
+  uniqueId: string,
+  capability: string,
+  tier: string,
+  overrides: Record<string, Override>,
+): string {
+  return overrides[overrideKey(uniqueId, capability)]?.tier ?? tier;
+}
+
+function buildTrustSummary(
+  row: DetailRow,
+  uniqueId: string,
+  overrides: Record<string, Override>,
+): TrustSummary {
+  const focusTier = effectiveTier(uniqueId, row.capability, row.tier, overrides);
+  const hasLocalOverride = Boolean(overrides[overrideKey(uniqueId, row.capability)]);
+  const evidence = asJson<Record<string, unknown>>(row.evidence_json) ?? {};
+  const reasoningLlm = typeof evidence.reasoning_llm === 'string' ? evidence.reasoning_llm.trim() : '';
+
+  let source: 'llm' | 'heuristic' | 'none' = 'none';
+  let detail = '';
+  if (reasoningLlm) {
+    source = 'llm';
+    detail = reasoningLlm;
+  } else if (row.explanation) {
+    source = 'heuristic';
+    detail = row.explanation;
+  }
+
+  return {
+    focusCapability: row.capability,
+    focusTier,
+    hasLocalOverride,
+    detail,
+    source,
+  };
+}
+
+function TrustSummaryCard({ summary }: { summary: TrustSummary }) {
+  if (summary.source === 'none') return null;
+
+  const isLlm = summary.source === 'llm';
+  const heading = isLlm ? 'AI summary' : 'Rule-based summary';
+
+  return (
+    <section className="space-y-2 rounded-lg border border-primary/20 bg-primary/5 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-1.5">
+          {isLlm && <Sparkles className="h-3.5 w-3.5 text-primary" aria-hidden="true" />}
+          <h3 className="text-sm font-semibold">{heading}</h3>
+          <span className="text-xs text-muted-foreground capitalize">— {summary.focusCapability}</span>
+        </div>
+        <TierBadge tier={summary.focusTier} compact />
+      </div>
+
+      <p className="text-sm leading-relaxed">{summary.detail}</p>
+
+      {summary.hasLocalOverride && (
+        <p className="text-xs font-medium text-amber-700">
+          A local override is applied for this capability — see the evidence section below for your note.
+        </p>
+      )}
+    </section>
+  );
+}
 
 function CapabilityCard({
   row,
@@ -347,6 +554,7 @@ function CapabilityCard({
   const contextSignals = pickSignals(evidence, CONTEXT_SIGNAL_LABELS, CONTEXT_SIGNAL_ORDER);
   const hasMatchedEvidence = evidenceSignals.length > 0;
   const noClaimContextNote = !hasMatchedEvidence ? buildNoClaimContextNote(contextSignals) : null;
+  const supportingSnippets = pickSnippets(evidence['supporting_snippets_llm']);
 
   const [editing, setEditing] = useState(false);
   const [draftTier, setDraftTier] = useState(override?.tier ?? row.tier);
@@ -362,7 +570,7 @@ function CapabilityCard({
       await onSave(draftTier, draftNote.trim());
       setEditing(false);
     } catch (error) {
-      setActionError(getErrorMessage(error, 'Unable to save the shared override.'));
+      setActionError(getErrorMessage(error, 'Unable to save the local override.'));
     } finally {
       setIsSaving(false);
     }
@@ -374,52 +582,79 @@ function CapabilityCard({
     try {
       await onClear();
     } catch (error) {
-      setActionError(getErrorMessage(error, 'Unable to clear the shared override.'));
+      setActionError(getErrorMessage(error, 'Unable to clear the local override.'));
     } finally {
       setIsSaving(false);
     }
   };
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-base capitalize">{row.capability}</CardTitle>
-          <div className="flex items-center gap-1">
-            {override && <span className="text-xs text-muted-foreground line-through">{TIER[row.tier]?.short}</span>}
+    <Card className="overflow-hidden shadow-sm">
+      <CardHeader className="border-b bg-muted/30 pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <CardTitle className="text-base capitalize leading-tight">{row.capability}</CardTitle>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {override && (
+              <span className="text-xs text-muted-foreground line-through">{TIER[row.tier]?.short}</span>
+            )}
             <TierBadge tier={override ? override.tier : row.tier} />
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-3 text-sm">
-        {row.explanation && <p className="text-muted-foreground">{row.explanation}</p>}
+      <CardContent className="space-y-4 p-4 text-sm">
+        {row.explanation && (
+          <p className="leading-relaxed text-muted-foreground">{row.explanation}</p>
+        )}
+
         {!hasMatchedEvidence && noClaimContextNote && (
-          <div className="rounded-md border border-muted bg-muted/20 p-3 text-xs text-muted-foreground">
+          <div className="rounded-md border border-dashed border-muted-foreground/30 bg-muted/20 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
             {noClaimContextNote}
           </div>
         )}
-        {evidenceSignals.length > 0 && (
-          <SignalGroup title="Matched evidence" items={evidenceSignals} variant="secondary" />
+
+        {supportingSnippets.length > 0 ? (
+          <SnippetList snippets={supportingSnippets} />
+        ) : (
+          evidenceSignals.length > 0 && (
+            <div className="rounded-md border bg-background p-3">
+              <SignalGroup title="Matched evidence" items={evidenceSignals} variant="secondary" />
+            </div>
+          )
         )}
+
         {hasMatchedEvidence && contextSignals.length > 0 && (
-          <SignalGroup title="Facility context" items={contextSignals} variant="outline" />
+          <div className="rounded-md border bg-background p-3">
+            <SignalGroup title="Facility context" items={contextSignals} variant="outline" />
+          </div>
         )}
+
         {citations.length > 0 && (
-          <div>
-            <p className="font-medium mb-1">Facility source URLs ({citations.length})</p>
-            <p className="mb-1 text-xs text-muted-foreground">
-              These are facility-level public URLs from the dataset and may not all support this specific capability.
-            </p>
-            <ul className="space-y-1">
+          <div className="space-y-2">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Source URLs
+                <span className="ml-1.5 font-normal normal-case">({citations.length})</span>
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                Facility-level public URLs from the dataset — not all may support this capability.
+              </p>
+            </div>
+            <ul className="space-y-2">
               {citations.slice(0, 10).map((url) => (
-                <li key={url} className="truncate">
+                <li key={url}>
                   <a
                     href={url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-primary underline underline-offset-2"
+                    className="group flex items-start gap-2 rounded-md border bg-muted/20 px-3 py-2 text-xs text-primary transition-colors hover:bg-muted/40"
                   >
-                    {url}
+                    <ExternalLink
+                      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-primary"
+                      aria-hidden="true"
+                    />
+                    <span className="break-all leading-relaxed underline-offset-2 group-hover:underline">
+                      {url}
+                    </span>
                   </a>
                 </li>
               ))}
@@ -427,94 +662,189 @@ function CapabilityCard({
           </div>
         )}
 
-        {override && !editing && (
-          <div className="rounded-md border border-amber-300 bg-amber-50 p-2">
-            <p className="text-xs font-medium text-amber-800">
-              Planner override → {TIER[override.tier]?.label ?? override.tier}
-            </p>
-            <p className="mt-0.5 text-xs text-amber-900">{override.note}</p>
-            {override.actorEmail && <p className="mt-0.5 text-[10px] text-amber-700">Saved by {override.actorEmail}</p>}
-            <p className="mt-0.5 text-[10px] text-amber-700">{new Date(override.ts).toLocaleString()}</p>
-          </div>
-        )}
-
-        {actionError && (
-          <div className="rounded-md border border-destructive/20 bg-destructive/10 p-2 text-xs text-destructive">
-            {actionError}
-          </div>
-        )}
-
-        {editing ? (
-          <div className="space-y-2 rounded-md border p-2">
-            <div className="space-y-1">
-              <Label className="text-xs">Override assessment</Label>
-              <Select value={draftTier} onValueChange={setDraftTier}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {TIER_ORDER.map((t) => (
-                    <SelectItem key={t} value={t}>
-                      {TIER[t].label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+        <div className="space-y-3 border-t pt-4">
+          {override && !editing && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2.5">
+              <p className="text-xs font-medium text-amber-800">
+                Local override — {TIER[override.tier]?.label ?? override.tier}
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-amber-900">{override.note}</p>
+              <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-amber-700">
+                {override.actorEmail && <span>Saved by {override.actorEmail}</span>}
+                <span>{new Date(override.ts).toLocaleString()}</span>
+              </div>
             </div>
-            <textarea
-              className="w-full rounded-md border bg-background p-2 text-sm"
-              rows={3}
-              placeholder="Reason for override (required) — e.g. confirmed by site visit / phone call"
-              value={draftNote}
-              onChange={(e) => setDraftNote(e.target.value)}
-            />
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => void save()}
-                disabled={!draftNote.trim() || isSaving}
-                className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
-              >
-                {isSaving ? 'Saving...' : 'Save'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setEditing(false)}
-                disabled={isSaving}
-                className="rounded-md border px-3 py-1 text-xs font-medium"
-              >
-                Cancel
-              </button>
+          )}
+
+          {actionError && (
+            <div className="rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {actionError}
             </div>
-          </div>
-        ) : (
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setDraftTier(override?.tier ?? row.tier);
-                setDraftNote(override?.note ?? '');
-                setActionError(null);
-                setEditing(true);
-              }}
-              className="rounded-md border px-3 py-1 text-xs font-medium"
-            >
-              {override ? 'Edit override' : 'Override assessment'}
-            </button>
-            {override && (
+          )}
+
+          {editing ? (
+            <div className="space-y-3 rounded-md border bg-muted/10 p-3">
+              <p className="text-xs text-muted-foreground">Stored only in this browser.</p>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Override assessment</Label>
+                <Select value={draftTier} onValueChange={setDraftTier}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TIER_ORDER.map((t) => (
+                      <SelectItem key={t} value={t}>
+                        {TIER[t].label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <textarea
+                className="w-full rounded-md border bg-background p-2.5 text-sm"
+                rows={3}
+                placeholder="Reason for override (required) — e.g. confirmed by site visit / phone call"
+                value={draftNote}
+                onChange={(e) => setDraftNote(e.target.value)}
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => void save()}
+                  disabled={!draftNote.trim() || isSaving}
+                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  {isSaving ? 'Saving...' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditing(false)}
+                  disabled={isSaving}
+                  className="rounded-md border bg-background px-3 py-1.5 text-xs font-medium"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => void clear()}
-                disabled={isSaving}
-                className="rounded-md border px-3 py-1 text-xs font-medium text-destructive"
+                onClick={() => {
+                  setDraftTier(override?.tier ?? row.tier);
+                  setDraftNote(override?.note ?? '');
+                  setActionError(null);
+                  setEditing(true);
+                }}
+                className="rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted/40"
               >
-                {isSaving ? 'Clearing...' : 'Clear'}
+                {override ? 'Edit override' : 'Override assessment'}
               </button>
-            )}
-          </div>
-        )}
+              {override && (
+                <button
+                  type="button"
+                  onClick={() => void clear()}
+                  disabled={isSaving}
+                  className="rounded-md border px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/5"
+                >
+                  {isSaving ? 'Clearing...' : 'Clear'}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </CardContent>
     </Card>
+  );
+}
+
+function FacilityMeta({
+  facilityType,
+  district,
+  state,
+  numDoctors,
+  capacityBeds,
+}: {
+  facilityType: string;
+  district: string;
+  state: string;
+  numDoctors?: number | null;
+  capacityBeds?: number | null;
+}) {
+  const items = [
+    {
+      icon: Building2,
+      label: 'Type',
+      value: facilityType,
+      className: 'capitalize',
+    },
+    {
+      icon: MapPin,
+      label: 'Location',
+      value: `${district}, ${state}`,
+    },
+    ...(numDoctors
+      ? [{ icon: Stethoscope, label: 'Doctors', value: String(numDoctors), className: undefined }]
+      : []),
+    ...(capacityBeds
+      ? [{ icon: BedDouble, label: 'Beds', value: String(capacityBeds), className: undefined }]
+      : []),
+  ];
+
+  return (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      {items.map(({ icon: Icon, label, value, className }) => (
+        <div
+          key={label}
+          className="flex items-start gap-2.5 rounded-lg border bg-muted/20 px-3 py-2.5"
+        >
+          <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+            <p className={`text-sm leading-snug ${className ?? ''}`}>{value}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SortableHead({
+  width,
+  label,
+  sortKey,
+  activeKey,
+  activeDir,
+  onSort,
+  align = 'left',
+}: {
+  width: string;
+  label: string;
+  sortKey: SortKey;
+  activeKey: SortKey;
+  activeDir: SortDir;
+  onSort: (key: SortKey) => void;
+  align?: 'left' | 'right';
+}) {
+  const isActive = activeKey === sortKey;
+  const Icon = isActive ? (activeDir === 'asc' ? ChevronUp : ChevronDown) : ChevronsUpDown;
+  const justify = align === 'right' ? 'justify-end' : 'justify-start';
+  const ariaSort = isActive ? (activeDir === 'asc' ? 'ascending' : 'descending') : 'none';
+  return (
+    <TableHead className={`${width} ${align === 'right' ? 'text-right' : ''}`} aria-sort={ariaSort}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={`-mx-2 inline-flex w-[calc(100%+1rem)] items-center gap-1 rounded px-2 py-1 text-left hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none ${justify}`}
+        aria-label={`Sort by ${label}${isActive ? ` (${activeDir === 'asc' ? 'ascending' : 'descending'})` : ''}`}
+      >
+        <span>{label}</span>
+        <Icon
+          className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-foreground' : 'text-muted-foreground/60'}`}
+          aria-hidden="true"
+        />
+      </button>
+    </TableHead>
   );
 }
 
@@ -533,6 +863,32 @@ function SignalGroup({ title, items, variant }: { title: string; items: string[]
   );
 }
 
+const MAX_SNIPPETS_SHOWN = 5;
+
+function SnippetList({ snippets }: { snippets: string[] }) {
+  const shown = snippets.slice(0, MAX_SNIPPETS_SHOWN);
+  return (
+    <div className="space-y-2">
+      <div>
+        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Why we think so</p>
+        <p className="mt-0.5 text-xs text-muted-foreground/80">
+          LLM-extracted quotes from this facility&apos;s profile text
+        </p>
+      </div>
+      <ul className="space-y-2">
+        {shown.map((snippet) => (
+          <li
+            key={snippet}
+            className="rounded-md border-l-2 border-primary/50 bg-muted/30 px-3 py-2 text-xs italic leading-relaxed text-muted-foreground"
+          >
+            &ldquo;{snippet}&rdquo;
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Legend() {
   return (
     <div className="mb-4 space-y-2">
@@ -545,29 +901,38 @@ function Legend() {
         ))}
       </div>
       <p className="text-xs text-muted-foreground">
-        Automated signals from public / scraped facility data — heuristic assessments, not certifications. The rank
-        number only orders facilities within a tier; it is not a quality score. Open a facility to review the evidence
-        and citations, and verify before relying. Planner overrides are shared through Lakebase and sync across users
-        about every 30 seconds.
+        Automated signals from public or scraped facility data are heuristic assessments, not certifications.
+        Facilities are ordered strongest-evidence first. Open a facility to review the evidence, supporting
+        snippets, and citations, and verify before relying. Planner overrides are stored in this browser only.
       </p>
     </div>
   );
 }
 
-function BadgeList({ title, items, max = 24 }: { title: string; items: string[]; max?: number }) {
+function BadgeList({
+  title,
+  items,
+  max = 24,
+  compact = false,
+}: {
+  title: string;
+  items: string[];
+  max?: number;
+  compact?: boolean;
+}) {
   if (items.length === 0) return null;
   const shown = items.slice(0, max);
   const extra = items.length - shown.length;
   return (
-    <div className="space-y-1">
-      <p className="text-sm font-medium">{title}</p>
+    <div className="space-y-1.5">
+      <p className={`font-medium ${compact ? 'text-xs text-muted-foreground' : 'text-sm'}`}>{title}</p>
       <div className="flex flex-wrap gap-1">
         {shown.map((it) => (
-          <Badge key={it} variant="outline" className="font-normal">
+          <Badge key={it} variant="outline" className="font-normal text-xs">
             {it}
           </Badge>
         ))}
-        {extra > 0 && <span className="text-xs text-muted-foreground self-center">+{extra} more</span>}
+        {extra > 0 && <span className="self-center text-xs text-muted-foreground">+{extra} more</span>}
       </div>
     </div>
   );
@@ -589,6 +954,21 @@ function asJson<T>(v: unknown): T | null {
 
 function pickSignals(evidence: Record<string, unknown>, labels: Record<string, string>, order: string[]): string[] {
   return order.filter((key) => evidence[key] === true).map((key) => labels[key]);
+}
+
+function pickSnippets(raw: unknown): string[] {
+  const parsed = asJson<unknown>(raw);
+  if (!Array.isArray(parsed)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of parsed) {
+    if (typeof item !== 'string') continue;
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
 }
 
 function buildNoClaimContextNote(contextSignals: string[]): string | null {

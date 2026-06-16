@@ -1,9 +1,5 @@
-import { createApp, analytics, lakebase, server } from '@databricks/appkit';
-import { setupTrustDeskOverrides } from './trustDeskOverrides';
+import { createApp, analytics, server } from '@databricks/appkit';
 
 await createApp({
-  plugins: [analytics(), server(), lakebase()],
-  async onPluginsReady(appkit) {
-    await setupTrustDeskOverrides(appkit);
-  },
+  plugins: [analytics(), server()],
 }).catch(console.error);

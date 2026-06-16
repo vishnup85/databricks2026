@@ -1,11 +1,11 @@
--- Gold: the trust mart. One row per (facility x capability) with a deterministic trust tier.
+-- Gold heuristic baseline: one row per (facility x capability) with a deterministic trust tier.
 -- Tiers: strong | partial | weak_suspicious | no_claim
 -- Evidence weighting:
 --   structured_hit (coded specialties / equipment) > claim_hit (capability prose) > prose_hit (description/procedure)
 --   corroboration: >=3 source URLs + official website + affiliated staff
 --   plausibility: high-acuity capability (icu/nicu/trauma/oncology) at a clinic/dentist/doctor/pharmacy is downgraded
 --   oncology screening-only language (no treatment terms) is capped at weak_suspicious
-CREATE OR REPLACE TABLE virtue_foundation_dataset_cleaned.gold.facility_capability_assessment AS
+CREATE OR REPLACE TABLE virtue_foundation_dataset_cleaned.gold.facility_capability_assessment_heuristic AS
 WITH hits AS (
   -- ICU
   SELECT unique_id, 'icu' AS capability,

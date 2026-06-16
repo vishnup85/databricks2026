@@ -2,178 +2,125 @@ import { useEffect, useState } from 'react';
 
 export type Override = { tier: string; note: string; ts: number; actorEmail?: string | null };
 
-type SharedOverrideRecord = {
-  facilityUniqueId: string;
-  capability: string;
-  tier: string;
-  note: string;
-  updatedAt: string;
-  actorEmail: string | null;
-};
+const STORAGE_KEY = 'facility-trust-desk-overrides-v1';
 
 export const overrideKey = (id: string, capability: string) => `${id}::${capability}`;
 
-export function useSharedOverrides() {
-  const [overrides, setOverrides] = useState<Record<string, Override>>({});
-  const [loadError, setLoadError] = useState<string | null>(null);
+export function usePlannerOverrides() {
+  const [overrides, setOverrides] = useState<Record<string, Override>>(() => readStoredOverrideState().overrides);
+  const [loadError, setLoadError] = useState<string | null>(() => readStoredOverrideState().loadError);
 
   useEffect(() => {
-    let active = true;
+    const syncAcrossTabs = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEY) return;
 
-    const syncOverrides = async () => {
       try {
-        const next = await fetchSharedOverrides();
-        if (!active) return;
-        setOverrides(next);
+        setOverrides(readStoredOverrides());
         setLoadError(null);
       } catch (error) {
-        if (!active) return;
-        setLoadError(getErrorMessage(error, 'Unable to sync shared planner overrides right now.'));
+        setLoadError(getErrorMessage(error, 'Unable to refresh local planner overrides from this browser.'));
       }
     };
 
-    void syncOverrides();
-    const timerId = window.setInterval(() => {
-      void syncOverrides();
-    }, 30_000);
-
-    return () => {
-      active = false;
-      window.clearInterval(timerId);
-    };
+    window.addEventListener('storage', syncAcrossTabs);
+    return () => window.removeEventListener('storage', syncAcrossTabs);
   }, []);
 
-  const saveOverride = async (id: string, capability: string, tier: string, note: string) => {
-    const saved = await putSharedOverride(id, capability, tier, note);
-    setOverrides((current) => ({ ...current, [overrideKey(id, capability)]: saved }));
-    setLoadError(null);
-  };
+  const saveOverride = (id: string, capability: string, tier: string, note: string): Promise<void> => {
+    const saved: Override = {
+      tier,
+      note,
+      ts: Date.now(),
+      actorEmail: null,
+    };
 
-  const clearOverride = async (id: string, capability: string) => {
-    await deleteSharedOverride(id, capability);
     setOverrides((current) => {
-      const next = { ...current };
-      delete next[overrideKey(id, capability)];
+      const next = { ...current, [overrideKey(id, capability)]: saved };
+      writeStoredOverrides(next);
       return next;
     });
     setLoadError(null);
+    return Promise.resolve();
+  };
+
+  const clearOverride = (id: string, capability: string): Promise<void> => {
+    setOverrides((current) => {
+      const next = { ...current };
+      delete next[overrideKey(id, capability)];
+      writeStoredOverrides(next);
+      return next;
+    });
+    setLoadError(null);
+    return Promise.resolve();
   };
 
   return { overrides, loadError, saveOverride, clearOverride };
 }
 
-async function fetchSharedOverrides() {
-  const response = await fetch('/api/trust-desk/overrides');
-  const payload = await readApiPayload(response);
+function readStoredOverrideState() {
+  try {
+    return {
+      overrides: readStoredOverrides(),
+      loadError: null,
+    };
+  } catch (error) {
+    return {
+      overrides: {},
+      loadError: getErrorMessage(error, 'Unable to load local planner overrides from this browser.'),
+    };
+  }
+}
 
-  if (!response.ok) {
-    throw new Error(getApiError(payload, 'Unable to load shared planner overrides.'));
+function readStoredOverrides(): Record<string, Override> {
+  if (typeof window === 'undefined') return {};
+
+  const raw = window.localStorage.getItem(STORAGE_KEY);
+  if (!raw) return {};
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
   }
 
-  const next: Record<string, Override> = {};
-  const rawOverrides = asRecord(payload)?.overrides;
+  return sanitizeOverrides(parsed);
+}
 
-  if (Array.isArray(rawOverrides)) {
-    for (const item of rawOverrides) {
-      const parsed = toSharedOverrideRecord(item);
-      if (parsed) {
-        next[overrideKey(parsed.facilityUniqueId, parsed.capability)] = {
-          tier: parsed.tier,
-          note: parsed.note,
-          ts: Date.parse(parsed.updatedAt),
-          actorEmail: parsed.actorEmail,
-        };
-      }
+function writeStoredOverrides(overrides: Record<string, Override>) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(overrides));
+}
+
+function sanitizeOverrides(value: unknown): Record<string, Override> {
+  if (!value || typeof value !== 'object') return {};
+
+  const next: Record<string, Override> = {};
+
+  for (const [key, rawOverride] of Object.entries(value)) {
+    const parsed = toOverride(rawOverride);
+    if (parsed) {
+      next[key] = parsed;
     }
   }
 
   return next;
 }
 
-async function putSharedOverride(id: string, capability: string, tier: string, note: string) {
-  const response = await fetch(
-    `/api/trust-desk/overrides/${encodeURIComponent(id)}/${encodeURIComponent(capability)}`,
-    {
-      method: 'PUT',
-      headers: {
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({ tier, note }),
-    }
-  );
+function toOverride(value: unknown): Override | null {
+  if (!value || typeof value !== 'object') return null;
 
-  const payload = await readApiPayload(response);
-  if (!response.ok) {
-    throw new Error(getApiError(payload, 'Unable to save shared planner override.'));
-  }
-
-  const override = toSharedOverrideRecord(asRecord(payload)?.override);
-  if (!override) {
-    throw new Error('Shared override response was malformed.');
-  }
-
-  return {
-    tier: override.tier,
-    note: override.note,
-    ts: Date.parse(override.updatedAt),
-    actorEmail: override.actorEmail,
-  };
-}
-
-async function deleteSharedOverride(id: string, capability: string) {
-  const response = await fetch(
-    `/api/trust-desk/overrides/${encodeURIComponent(id)}/${encodeURIComponent(capability)}`,
-    {
-      method: 'DELETE',
-    }
-  );
-
-  const payload = await readApiPayload(response);
-  if (!response.ok) {
-    throw new Error(getApiError(payload, 'Unable to clear shared planner override.'));
-  }
-}
-
-async function readApiPayload(response: Response) {
-  const text = await response.text();
-  if (!text) return null;
-
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return null;
-  }
-}
-
-function toSharedOverrideRecord(value: unknown): SharedOverrideRecord | null {
-  const record = asRecord(value);
-  if (!record) return null;
-  if (typeof record.facilityUniqueId !== 'string') return null;
-  if (typeof record.capability !== 'string') return null;
+  const record = value as Record<string, unknown>;
   if (typeof record.tier !== 'string') return null;
   if (typeof record.note !== 'string') return null;
-  if (typeof record.updatedAt !== 'string') return null;
-
-  const ts = Date.parse(record.updatedAt);
-  if (Number.isNaN(ts)) return null;
+  if (typeof record.ts !== 'number' || Number.isNaN(record.ts)) return null;
 
   return {
-    facilityUniqueId: record.facilityUniqueId,
-    capability: record.capability,
     tier: record.tier,
     note: record.note,
-    updatedAt: record.updatedAt,
+    ts: record.ts,
     actorEmail: typeof record.actorEmail === 'string' ? record.actorEmail : null,
   };
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
-}
-
-function getApiError(payload: unknown, fallback: string) {
-  const record = asRecord(payload);
-  return typeof record?.error === 'string' && record.error.trim() ? record.error : fallback;
 }
 
 export function getErrorMessage(error: unknown, fallback: string) {
