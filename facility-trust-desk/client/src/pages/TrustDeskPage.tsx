@@ -33,6 +33,7 @@ import {
   ChevronUp,
   ChevronsUpDown,
   ExternalLink,
+  HelpCircle,
   MapPin,
   MousePointerClick,
   Sparkles,
@@ -80,6 +81,19 @@ const CONTEXT_SIGNAL_LABELS: Record<string, string> = {
   implausible: 'implausible for facility type/scale',
   recent_update: 'recent facility page update',
   capacity_supported: 'hospital-scale capacity reported',
+};
+
+const COLUMN_HELP: Record<SortKey, string> = {
+  name:
+    "The facility's name as recorded in the source dataset. Click the row to open the evidence sidebar.",
+  facility_type:
+    'Facility category from the dataset (e.g. hospital, clinic, dentist). Used in plausibility checks — advanced capabilities at non-hospitals are downgraded.',
+  district_norm:
+    'Normalized district from the postal-code reference table. More reliable than the raw address field.',
+  tier:
+    'Trust tier for this capability: Strong (structured + corroborated), Partial (limited corroboration), Weak/suspicious (thin or implausible), or No evidence. Not a certification — verify before relying.',
+  n_source_urls:
+    'Number of distinct public URLs collected for the facility profile. Higher counts usually mean better corroboration, but these are facility-level and may not all mention this specific capability.',
 };
 
 const EVIDENCE_SIGNAL_ORDER = ['structured_hit', 'claim_hit', 'prose_hit'];
@@ -267,6 +281,7 @@ export function TrustDeskPage() {
                       activeKey={sortKey}
                       activeDir={sortDir}
                       onSort={toggleSort}
+                      help={COLUMN_HELP.name}
                     />
                     <SortableHead
                       width="w-[12%]"
@@ -275,6 +290,7 @@ export function TrustDeskPage() {
                       activeKey={sortKey}
                       activeDir={sortDir}
                       onSort={toggleSort}
+                      help={COLUMN_HELP.facility_type}
                     />
                     <SortableHead
                       width="w-[22%]"
@@ -283,6 +299,7 @@ export function TrustDeskPage() {
                       activeKey={sortKey}
                       activeDir={sortDir}
                       onSort={toggleSort}
+                      help={COLUMN_HELP.district_norm}
                     />
                     <SortableHead
                       width="w-[16%]"
@@ -291,6 +308,7 @@ export function TrustDeskPage() {
                       activeKey={sortKey}
                       activeDir={sortDir}
                       onSort={toggleSort}
+                      help={COLUMN_HELP.tier}
                     />
                     <SortableHead
                       width="w-[10%]"
@@ -300,6 +318,7 @@ export function TrustDeskPage() {
                       activeDir={sortDir}
                       onSort={toggleSort}
                       align="right"
+                      help={COLUMN_HELP.n_source_urls}
                     />
                     <TableHead className="w-[4%]" aria-label="Open details" />
                   </TableRow>
@@ -817,6 +836,7 @@ function SortableHead({
   activeDir,
   onSort,
   align = 'left',
+  help,
 }: {
   width: string;
   label: string;
@@ -825,6 +845,7 @@ function SortableHead({
   activeDir: SortDir;
   onSort: (key: SortKey) => void;
   align?: 'left' | 'right';
+  help?: string;
 }) {
   const isActive = activeKey === sortKey;
   const Icon = isActive ? (activeDir === 'asc' ? ChevronUp : ChevronDown) : ChevronsUpDown;
@@ -832,19 +853,52 @@ function SortableHead({
   const ariaSort = isActive ? (activeDir === 'asc' ? 'ascending' : 'descending') : 'none';
   return (
     <TableHead className={`${width} ${align === 'right' ? 'text-right' : ''}`} aria-sort={ariaSort}>
+      <div className={`flex items-center gap-1 ${justify}`}>
+        <button
+          type="button"
+          onClick={() => onSort(sortKey)}
+          className="-mx-1 inline-flex items-center gap-1 rounded px-1 py-1 hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none"
+          aria-label={`Sort by ${label}${isActive ? ` (${activeDir === 'asc' ? 'ascending' : 'descending'})` : ''}`}
+        >
+          <span>{label}</span>
+          <Icon
+            className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-foreground' : 'text-muted-foreground/60'}`}
+            aria-hidden="true"
+          />
+        </button>
+        {help && <HelpTooltip text={help} label={`What does ${label} mean?`} align={align} />}
+      </div>
+    </TableHead>
+  );
+}
+
+function HelpTooltip({
+  text,
+  label,
+  align = 'left',
+}: {
+  text: string;
+  label: string;
+  align?: 'left' | 'right';
+}) {
+  const popoverPosition = align === 'right' ? 'right-0' : 'left-0';
+  return (
+    <span className="group/help relative inline-flex">
       <button
         type="button"
-        onClick={() => onSort(sortKey)}
-        className={`-mx-2 inline-flex w-[calc(100%+1rem)] items-center gap-1 rounded px-2 py-1 text-left hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none ${justify}`}
-        aria-label={`Sort by ${label}${isActive ? ` (${activeDir === 'asc' ? 'ascending' : 'descending'})` : ''}`}
+        aria-label={label}
+        title={text}
+        className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground/60 hover:bg-muted/60 hover:text-foreground focus-visible:bg-muted/60 focus-visible:text-foreground focus-visible:outline-none"
       >
-        <span>{label}</span>
-        <Icon
-          className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-foreground' : 'text-muted-foreground/60'}`}
-          aria-hidden="true"
-        />
+        <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
       </button>
-    </TableHead>
+      <span
+        role="tooltip"
+        className={`pointer-events-none absolute top-full z-50 mt-1 hidden w-64 rounded-md border bg-popover px-3 py-2 text-xs font-normal normal-case leading-relaxed text-popover-foreground shadow-md group-hover/help:block group-focus-within/help:block ${popoverPosition}`}
+      >
+        {text}
+      </span>
+    </span>
   );
 }
 

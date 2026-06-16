@@ -46,11 +46,16 @@ databricks_hackathon/
 |   `-- README.md
 |-- prompts/
 |   |-- facility_capability_signal_system_v1.txt
-|   `-- facility_capability_signal_user_v1.txt
+|   |-- facility_capability_signal_user_v1.txt
+|   `-- facility_capability_signal_user_batch_v2.txt
 |-- run_pipeline.ps1
 |-- run_llm_capability_review.py
+|-- run_llm_capability_review_default.ps1
+|-- run_llm_capability_review_openai.ps1
 |-- facility_trust_queries.py
 |-- track1_dataset_analysis.md
+|-- build_pitch_deck.py
+|-- facility_trust_desk_pitch.pptx
 `-- facility-trust-desk/
     |-- config/queries/*.sql
     `-- client/src/pages/TrustDeskPage.tsx

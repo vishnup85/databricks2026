@@ -354,7 +354,9 @@ are real evidence rather than a manufactured citation grade.
 
 ## Using the LLM layer
 
-1. Run scripts `01` through `07` to rebuild the deterministic tables and the prompt-ready inputs.
+1. Run scripts `01` through `08` to rebuild the deterministic tables, the prompt-ready inputs, and
+   the append-only raw output table (`08` is `CREATE TABLE IF NOT EXISTS`, so it is a no-op after the
+   first run but the table must exist before step 2).
 2. Batch the rows from `silver.facility_capability_llm_inputs` through your model of choice and
    append normalized results into `silver.facility_capability_llm_outputs_raw`.
 3. Run scripts `09` and `10` to refresh the parsed LLM signals and the final serving table.
@@ -366,10 +368,21 @@ There is a checked-in Python helper for step 2:
 
 - `run_llm_capability_review.py`
 
-It reads from the input table, calls `databricks serving-endpoints query`, and writes normalized
-rows into `silver.facility_capability_llm_outputs_raw` using the Databricks CLI profile you pass in.
+It reads from the input table and writes normalized rows into
+`silver.facility_capability_llm_outputs_raw` using the Databricks CLI profile you pass in. By
+default it POSTs to a Databricks Model Serving endpoint at
+`/serving-endpoints/<endpoint>/invocations`; pass `--provider openai` to call the OpenAI Responses
+API instead (the runner still reads from and writes to Databricks SQL via the CLI either way).
 Use `--all-pending` to sweep every pending `facility x capability` row, or `--capability` for a
 smaller targeted batch.
+
+Two PowerShell wrappers are checked in alongside it for the common cases:
+
+- `run_llm_capability_review_default.ps1` -- Databricks-hosted endpoint
+  (`databricks-meta-llama-3-1-8b-instruct` by default), with batched facility mode and shared-endpoint
+  QPS-friendly defaults.
+- `run_llm_capability_review_openai.ps1` -- OpenAI Responses API, reading `OPENAI_API_KEY` from the
+  environment, with higher default parallelism.
 
 ## How the tables connect
 
