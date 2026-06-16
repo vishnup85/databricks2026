@@ -782,6 +782,421 @@ def slide_ambition(prs: Presentation, n: int, total: int):
     add_footer(s, n, total)
 
 
+def _appendix_eyebrow(s, label: str):
+    add_accent_bar(s, color=TEAL)
+    add_eyebrow(s, f"Appendix \u00b7 {label}", color=TEAL)
+
+
+def slide_architecture(prs: Presentation, n: int, total: int):
+    s = add_blank_slide(prs)
+    _appendix_eyebrow(s, "Architecture")
+    add_title(s, "What runs where.")
+
+    # Four-lane horizontal architecture: Sources -> Heuristic SQL -> LLM sidecar -> Serving
+    lane_top = Inches(2.4)
+    lane_h = Inches(4.0)
+    lane_gap = Inches(0.18)
+    total_w = Inches(12.1)
+    lane_w = (total_w - lane_gap * 3) / 4
+    xs = [Inches(0.6) + i * (lane_w + lane_gap) for i in range(4)]
+
+    lane_headers = [
+        ("SOURCES", "Unity Catalog (read-only)", MUTED),
+        ("HEURISTIC SQL", "Databricks SQL Warehouse", AMBER),
+        ("LLM SIDECAR", "Python runner + Model Serving", TEAL),
+        ("SERVING", "Databricks App + Browser", GREEN),
+    ]
+
+    for x, (head, sub, color) in zip(xs, lane_headers):
+        add_card(s, left=x, top=lane_top, width=lane_w, height=lane_h)
+        stripe = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, lane_top, lane_w, Inches(0.14))
+        stripe.line.fill.background()
+        stripe.fill.solid()
+        stripe.fill.fore_color.rgb = color
+        add_text(
+            s, head,
+            left=x + Inches(0.15), top=lane_top + Inches(0.25),
+            width=lane_w - Inches(0.3), height=Inches(0.4),
+            size=13, bold=True, color=color, align=PP_ALIGN.CENTER,
+        )
+        add_text(
+            s, sub,
+            left=x + Inches(0.15), top=lane_top + Inches(0.7),
+            width=lane_w - Inches(0.3), height=Inches(0.35),
+            size=10, color=MUTED, align=PP_ALIGN.CENTER,
+        )
+
+    def lane_items(x, items, *, start_top=lane_top + Inches(1.2)):
+        item_h = Inches(0.42)
+        gap = Inches(0.1)
+        y = start_top
+        for label, sub, color in items:
+            box = s.shapes.add_shape(
+                MSO_SHAPE.ROUNDED_RECTANGLE,
+                x + Inches(0.12), y, lane_w - Inches(0.24), item_h,
+            )
+            box.adjustments[0] = 0.25
+            box.line.color.rgb = color
+            box.line.width = Pt(0.75)
+            box.fill.solid()
+            box.fill.fore_color.rgb = NAVY
+            add_text(
+                s, label,
+                left=x + Inches(0.22), top=y + Inches(0.02),
+                width=lane_w - Inches(0.44), height=Inches(0.22),
+                size=10, bold=True, color=color, font=FONT_MONO,
+            )
+            add_text(
+                s, sub,
+                left=x + Inches(0.22), top=y + Inches(0.22),
+                width=lane_w - Inches(0.44), height=Inches(0.2),
+                size=8.5, color=MUTED,
+            )
+            y += item_h + gap
+
+    lane_items(xs[0], [
+        ("facilities", "10,088 raw rows", MUTED),
+        ("india_post_pincode_directory", "pincode \u2192 district", MUTED),
+        ("nfhs_5_district_health_indicators", "district health stats", MUTED),
+    ])
+    lane_items(xs[1], [
+        ("01-03  silver.*_clean", "clean + dedupe", AMBER),
+        ("04-05  gold.geo / need_index", "joins + planner context", AMBER),
+        ("06  gold.*_assessment_heuristic", "deterministic baseline tier", AMBER),
+    ])
+    lane_items(xs[2], [
+        ("07  silver.llm_inputs", "prompt-ready + fingerprint", TEAL),
+        ("run_llm_capability_review.py", "Databricks Serving or OpenAI", TEAL),
+        ("08  silver.llm_outputs_raw", "append-only model output", TEAL),
+        ("09  gold.llm_signals", "typed sub-signals + status", TEAL),
+    ])
+    lane_items(xs[3], [
+        ("10  gold.*_assessment", "final tier, SQL-recomputed", GREEN),
+        ("Databricks App (AppKit)", "states / capability_ranked / facility_detail", GREEN),
+        ("Browser (React + localStorage)", "ranking, drill-down, overrides", GREEN),
+    ])
+
+    # Arrows between lanes
+    for i in range(3):
+        arr = s.shapes.add_shape(
+            MSO_SHAPE.RIGHT_ARROW,
+            xs[i] + lane_w - Inches(0.05),
+            lane_top + lane_h / 2 - Inches(0.15),
+            lane_gap + Inches(0.1),
+            Inches(0.3),
+        )
+        arr.line.fill.background()
+        arr.fill.solid()
+        arr.fill.fore_color.rgb = MUTED
+
+    # Bottom guarantee strip
+    add_card(s, left=Inches(0.6), top=Inches(6.55), width=Inches(12.1), height=Inches(0.4), fill=NAVY_2, border=AMBER)
+    add_text(
+        s,
+        "The model never writes the final tier. Script 10 rebuilds it deterministically from script 06's baseline + current LLM sub-signals.",
+        left=Inches(0.85), top=Inches(6.6), width=Inches(11.6), height=Inches(0.3),
+        size=11, italic=True, color=INK, align=PP_ALIGN.CENTER,
+    )
+    add_footer(s, n, total)
+
+
+def slide_worked_example(prs: Presentation, n: int, total: int):
+    s = add_blank_slide(prs)
+    _appendix_eyebrow(s, "Worked example")
+    add_title(s, "Greenfield General: oncology row, before and after LLM.")
+
+    add_text(
+        s,
+        "Specialties list \"Oncology\". 6 sources, official site, named staff, 80 beds. "
+        "Description says \"Our oncology screening clinic runs every Monday.\"",
+        left=Inches(0.6), top=Inches(2.25), width=Inches(12.1), height=Inches(0.6),
+        size=14, italic=True, color=MUTED,
+    )
+
+    col_top = Inches(2.95)
+    col_h = Inches(3.95)
+    col_w = (Inches(12.1) - Inches(0.3)) / 2
+
+    # LEFT: Heuristic only
+    x = Inches(0.6)
+    add_card(s, left=x, top=col_top, width=col_w, height=col_h, border=AMBER)
+    add_text(
+        s, "HEURISTIC ONLY (script 06)",
+        left=x + Inches(0.25), top=col_top + Inches(0.18),
+        width=col_w - Inches(0.5), height=Inches(0.4),
+        size=13, bold=True, color=AMBER,
+    )
+    add_text(
+        s,
+        [
+            "structured_hit = true   (Oncology in specialties)",
+            "claim_hit      = true",
+            "prose_hit      = true",
+            "screening_only = false  (regex saw \"oncology\")",
+            "well_corroborated = true",
+        ],
+        left=x + Inches(0.25), top=col_top + Inches(0.65),
+        width=col_w - Inches(0.5), height=Inches(1.7),
+        size=12, color=INK, font=FONT_MONO,
+    )
+    add_text(
+        s, "Tier rule that fires:",
+        left=x + Inches(0.25), top=col_top + Inches(2.3),
+        width=col_w - Inches(0.5), height=Inches(0.3),
+        size=11, color=MUTED,
+    )
+    add_text(
+        s, "structured + well_corroborated  \u2192  STRONG",
+        left=x + Inches(0.25), top=col_top + Inches(2.6),
+        width=col_w - Inches(0.5), height=Inches(0.45),
+        size=14, bold=True, color=INK, font=FONT_MONO,
+    )
+    add_pill(s, "STRONG  ·  score 96",
+             left=x + Inches(0.25), top=col_top + Inches(3.2),
+             width=Inches(3.5), height=Inches(0.55), fill=GREEN)
+
+    # RIGHT: Heuristic + LLM
+    x2 = Inches(0.6) + col_w + Inches(0.3)
+    add_card(s, left=x2, top=col_top, width=col_w, height=col_h, border=GREEN)
+    add_text(
+        s, "HEURISTIC + LLM (script 10)",
+        left=x2 + Inches(0.25), top=col_top + Inches(0.18),
+        width=col_w - Inches(0.5), height=Inches(0.4),
+        size=13, bold=True, color=GREEN,
+    )
+    add_text(
+        s,
+        [
+            "LLM read the prose. Returned typed signals:",
+            "  screening_only_llm   = true",
+            "  capability_scope_llm = screening_or_diagnostics_only",
+            "  llm_review_status    = current",
+            "structured_hit, implausible, well_corroborated unchanged.",
+        ],
+        left=x2 + Inches(0.25), top=col_top + Inches(0.65),
+        width=col_w - Inches(0.5), height=Inches(1.7),
+        size=11, color=INK, font=FONT_MONO,
+    )
+    add_text(
+        s, "Tier rule that fires (NEW, top of ladder):",
+        left=x2 + Inches(0.25), top=col_top + Inches(2.3),
+        width=col_w - Inches(0.5), height=Inches(0.3),
+        size=11, color=MUTED,
+    )
+    add_text(
+        s, "capability_scope = screening_only  \u2192  WEAK",
+        left=x2 + Inches(0.25), top=col_top + Inches(2.6),
+        width=col_w - Inches(0.5), height=Inches(0.45),
+        size=14, bold=True, color=INK, font=FONT_MONO,
+    )
+    add_pill(s, "WEAK / SUSPICIOUS  ·  score 36",
+             left=x2 + Inches(0.25), top=col_top + Inches(3.2),
+             width=Inches(4.2), height=Inches(0.55), fill=AMBER)
+    add_footer(s, n, total)
+
+
+def slide_two_ladders(prs: Presentation, n: int, total: int):
+    s = add_blank_slide(prs)
+    _appendix_eyebrow(s, "The tier ladders")
+    add_title(s, "Script 10 is script 06's ladder with two new rules on top.")
+
+    col_top = Inches(2.55)
+    col_h = Inches(4.2)
+    col_w = (Inches(12.1) - Inches(0.3)) / 2
+
+    rules_06 = [
+        ("1", "no evidence", "no_claim", MUTED),
+        ("2", "oncology + screening_only + NOT structured", "weak", AMBER),
+        ("3", "implausible", "weak", AMBER),
+        ("4", "structured + well_corroborated", "strong", GREEN),
+        ("5", "structured OR claim", "partial", YELLOW),
+        ("6", "prose only", "weak", AMBER),
+        ("7", "ELSE", "no_claim", MUTED),
+    ]
+    rules_10 = [
+        ("1", "no evidence", "no_claim", MUTED, False),
+        ("2", "capability_scope = screening_or_diagnostics_only", "weak", TEAL, True),
+        ("3", "capability_scope = adjacent_service", "weak", TEAL, True),
+        ("4", "oncology + screening_only + NOT structured", "weak", AMBER, False),
+        ("5", "implausible", "weak", AMBER, False),
+        ("6", "structured + well_corroborated", "strong", GREEN, False),
+        ("7", "structured OR claim", "partial", YELLOW, False),
+        ("8", "prose only", "weak", AMBER, False),
+        ("9", "ELSE", "no_claim", MUTED, False),
+    ]
+
+    def draw_ladder(x, header, rules, header_color):
+        add_card(s, left=x, top=col_top, width=col_w, height=col_h)
+        add_text(
+            s, header,
+            left=x + Inches(0.25), top=col_top + Inches(0.15),
+            width=col_w - Inches(0.5), height=Inches(0.4),
+            size=14, bold=True, color=header_color,
+        )
+        row_h = Inches(0.4)
+        gap = Inches(0.06)
+        y = col_top + Inches(0.7)
+        for row in rules:
+            if len(row) == 5:
+                num, condition, result, color, is_new = row
+            else:
+                num, condition, result, color = row
+                is_new = False
+            # background highlight for NEW rules
+            if is_new:
+                hl = s.shapes.add_shape(
+                    MSO_SHAPE.ROUNDED_RECTANGLE,
+                    x + Inches(0.18), y - Inches(0.02),
+                    col_w - Inches(0.36), row_h + Inches(0.04),
+                )
+                hl.adjustments[0] = 0.2
+                hl.line.color.rgb = TEAL
+                hl.line.width = Pt(0.75)
+                hl.fill.solid()
+                hl.fill.fore_color.rgb = NAVY
+            add_text(
+                s, num,
+                left=x + Inches(0.25), top=y + Inches(0.04),
+                width=Inches(0.3), height=row_h,
+                size=12, bold=True, color=MUTED, font=FONT_MONO,
+            )
+            add_text(
+                s, condition,
+                left=x + Inches(0.6), top=y + Inches(0.04),
+                width=col_w - Inches(2.3), height=row_h,
+                size=11, color=INK, font=FONT_MONO,
+            )
+            add_text(
+                s, "\u2192 " + result,
+                left=x + col_w - Inches(1.65), top=y + Inches(0.04),
+                width=Inches(1.4), height=row_h,
+                size=11, bold=True, color=color, font=FONT_MONO, align=PP_ALIGN.RIGHT,
+            )
+            if is_new:
+                add_text(
+                    s, "NEW",
+                    left=x + col_w - Inches(0.75), top=y + Inches(0.04),
+                    width=Inches(0.5), height=row_h,
+                    size=9, bold=True, color=TEAL,
+                )
+            y += row_h + gap
+
+    draw_ladder(Inches(0.6), "SCRIPT 06  ·  heuristic only", rules_06, AMBER)
+    draw_ladder(Inches(0.6) + col_w + Inches(0.3), "SCRIPT 10  ·  heuristic + LLM", rules_10, GREEN)
+
+    add_text(
+        s,
+        "First matching rule wins. The two NEW rules only fire when the LLM review is current; "
+        "otherwise capability_scope is NULL and rules 2 and 3 cannot match, so script 10 behaves like script 06.",
+        left=Inches(0.6), top=Inches(6.85), width=Inches(12.1), height=Inches(0.4),
+        size=11, italic=True, color=MUTED, align=PP_ALIGN.CENTER,
+    )
+    add_footer(s, n, total)
+
+
+def slide_why_llm_overrides(prs: Presentation, n: int, total: int):
+    s = add_blank_slide(prs)
+    _appendix_eyebrow(s, "Why the LLM can do what the regex can't")
+    add_title(s, "Same idea. Two safety guards removed, on purpose.")
+
+    # Three guard cards
+    card_top = Inches(2.5)
+    card_h = Inches(3.4)
+    card_w = (Inches(12.1) - Inches(0.4)) / 3
+    xs = [Inches(0.6) + i * (card_w + Inches(0.2)) for i in range(3)]
+
+    cards = [
+        (
+            "GUARD 1  (06)", AMBER,
+            "screening_only is a regex",
+            [
+                "Flags when text has",
+                "  cancer / tumor",
+                "AND NOT",
+                "  oncolog%, chemotherap%,",
+                "  cancer treatment, ...",
+                "",
+                "Greenfield text contains",
+                "\"oncology\", so the flag is",
+                "false. Regex cannot tell",
+                "\"oncology screening clinic\"",
+                "from \"oncology department\".",
+            ],
+        ),
+        (
+            "GUARD 2  (06)", AMBER,
+            "Refuses to overrule structured fields",
+            [
+                "Rule requires",
+                "  NOT structured_hit",
+                "",
+                "If \"Oncology\" is in the formal",
+                "specialty list, the heuristic",
+                "trusts that fact over its own",
+                "fuzzy regex.",
+                "",
+                "Greenfield has structured_hit",
+                "= true, so the rule cannot fire",
+                "even if the regex had triggered.",
+            ],
+        ),
+        (
+            "LLM RULE  (10)", GREEN,
+            "Both guards removed",
+            [
+                "capability_scope =",
+                "  screening_or_diagnostics_only",
+                "",
+                "Typed verdict from the model",
+                "after reading the actual prose.",
+                "Explicitly allowed to overrule",
+                "the structured specialty list.",
+                "",
+                "Safer because the LLM read the",
+                "page, not a regex.",
+            ],
+        ),
+    ]
+
+    for x, (label, color, head, body) in zip(xs, cards):
+        add_card(s, left=x, top=card_top, width=card_w, height=card_h, border=color)
+        add_text(
+            s, label,
+            left=x + Inches(0.2), top=card_top + Inches(0.15),
+            width=card_w - Inches(0.4), height=Inches(0.35),
+            size=11, bold=True, color=color,
+        )
+        add_text(
+            s, head,
+            left=x + Inches(0.2), top=card_top + Inches(0.5),
+            width=card_w - Inches(0.4), height=Inches(0.6),
+            size=15, bold=True, color=INK,
+        )
+        add_text(
+            s, body,
+            left=x + Inches(0.2), top=card_top + Inches(1.15),
+            width=card_w - Inches(0.4), height=card_h - Inches(1.3),
+            size=11, color=INK, font=FONT_MONO,
+        )
+
+    # Safety strip: fingerprint + fallback
+    add_card(s, left=Inches(0.6), top=Inches(6.05), width=Inches(12.1), height=Inches(0.95), fill=NAVY_2, border=TEAL)
+    add_text(
+        s, "SAFETY NET",
+        left=Inches(0.85), top=Inches(6.15), width=Inches(11.5), height=Inches(0.3),
+        size=11, bold=True, color=TEAL,
+    )
+    add_text(
+        s,
+        "Every LLM review is tied to a hash of the evidence it saw. If the facility text changes the "
+        "review goes \"stale\"; script 10 then falls back to script 06's heuristic flags automatically. "
+        "If no LLM review exists at all, script 10 produces the same answer as script 06.",
+        left=Inches(0.85), top=Inches(6.45), width=Inches(11.5), height=Inches(0.55),
+        size=11, color=INK,
+    )
+    add_footer(s, n, total)
+
+
 def slide_thanks(prs: Presentation, n: int, total: int):
     s = add_blank_slide(prs)
 
@@ -867,6 +1282,10 @@ def build(out_path: Path):
         slide_by_the_numbers,
         slide_ambition,
         slide_thanks,
+        slide_architecture,
+        slide_worked_example,
+        slide_two_ladders,
+        slide_why_llm_overrides,
     ]
     total = len(builders)
     for i, fn in enumerate(builders, start=1):

@@ -292,6 +292,155 @@ Important behavior:
 - `screening_or_diagnostics_only` caps a row at `weak_suspicious`
 - the model still never assigns the tier directly; SQL does
 
+#### The two tier ladders, side by side
+
+Both scripts pick the tier by running a top-down `CASE WHEN`: the first matching rule wins and the
+rest are skipped. Script `10` is just script `06`'s ladder with two new rules inserted at the top.
+
+```text
+  rule  06 - heuristic only                              10 - heuristic + LLM
+  ----  -------------------------------------------     -------------------------------------------
+   1    no evidence -> no_claim                          no evidence -> no_claim
+   2    -                                                capability_scope = "screening_or_diagnostics_only" -> weak   <- NEW
+   3    -                                                capability_scope = "adjacent_service" -> weak                <- NEW
+   4    oncology + screening_only + NOT structured -> w  oncology + screening_only + NOT structured -> weak
+   5    implausible -> weak                              implausible -> weak
+   6    structured + well_corroborated -> strong         structured + well_corroborated -> strong
+   7    structured OR claim -> partial                   structured OR claim -> partial
+   8    prose only -> weak                               prose only -> weak
+   9    ELSE -> no_claim                                 ELSE -> no_claim
+```
+
+Two important things follow from this shape:
+
+- The two new rules (2 and 3) only ever fire when the LLM review is `current`. If it is `stale` or
+  `missing`, `capability_scope` is `NULL`, neither rule can match, and `10`'s ladder behaves
+  identically to `06`'s.
+- The new rules sit **above** the `structured + well_corroborated -> strong` rule, which is what
+  lets the LLM downgrade a row that the heuristic would have called `strong`.
+
+#### Worked example: a hospital that looks strong but is really screening-only
+
+Take "Greenfield General Hospital". It has `"Oncology"` listed in its specialties, 6 source URLs, an
+official website, and named staff. Its description says: "Our oncology screening clinic runs every
+Monday." Reasonable size: 80 beds, 25 doctors.
+
+`06` produces the heuristic row:
+
+```text
+structured_hit   = true      claim_hit  = true       prose_hit       = true
+screening_only   = false     implausible = false     well_corroborated = true
+heuristic_tier   = strong    heuristic_score = 96
+```
+
+Why `strong`? The regex sees the word "oncology" in the specialties and prose, so it can't tell
+this is just a once-a-week screening clinic.
+
+`09` writes the LLM review for the same row:
+
+```text
+claim_hit_llm = true   prose_hit_llm = true   screening_only_llm = true
+capability_scope_llm  = "screening_or_diagnostics_only"
+llm_review_status     = current
+```
+
+`10` left-joins the two and picks an "effective" value for each sub-signal. The rule for every
+LLM-overrideable field is the same:
+
+```text
+if llm_review_status = "current" and the LLM gave a value -> use LLM
+otherwise                                                 -> use heuristic
+```
+
+So `claim_hit`, `prose_hit`, `screening_only`, and `capability_scope` come from the LLM.
+`structured_hit`, `implausible`, and `well_corroborated` are never overridden by the LLM and stay
+as heuristic.
+
+Then `10` runs the tier ladder top-to-bottom on the effective flags. The first matching rule wins:
+
+```text
+1. no evidence at all?                                   no   skip
+2. capability_scope = "screening_or_diagnostics_only"?   YES  -> tier = weak_suspicious. STOP.
+3. capability_scope = "adjacent_service"?                (not reached)
+4. oncology + screening_only + NOT structured_hit?       (not reached)
+5. implausible?                                          (not reached)
+6. structured + well_corroborated?  <- would have given "strong" again
+7. structured OR claim?                                  (not reached)
+8. prose only?                                           (not reached)
+```
+
+Final row:
+
+```text
+tier         = weak_suspicious     score        = 36
+heuristic_tier = strong            heuristic_score = 96       (preserved for audit)
+explanation  = "LLM review found only screening or diagnostic evidence for oncology,
+                so this is capped as weak/suspicious."
+```
+
+The row dropped from `strong` to `weak_suspicious`, the model never picked a tier, and both views
+are kept on the row so the app and an auditor can compare them.
+
+#### Why the LLM rule fires when the heuristic's couldn't
+
+It is fair to ask: row 4 in the ladder (`oncology + screening_only + NOT structured`) is the same in
+both scripts. Why didn't the heuristic also catch Greenfield as `weak_suspicious`?
+
+The heuristic version of the screening rule has **two** guards that both block in this case:
+
+- `screening_only` (heuristic) is `false`. The regex in `06` flags screening-only only when the text
+  mentions `cancer` / `tumor` but does **not** mention any treatment-flavored term such as
+  `oncolog%`, `chemotherap%`, or `cancer treatment`. The Greenfield description literally contains
+  the word "oncology" ("oncology screening clinic"), so the AND-NOT half is false and the flag is
+  false. The regex genuinely cannot tell "oncology screening clinic" from "oncology department".
+- `NOT structured_hit` is also `false`, because "Oncology" is in the formal `specialties[]` list.
+  This guard is deliberate: a regex on free text is too noisy to overrule structured fields, so the
+  heuristic refuses to fire its own screening rule when structured evidence exists.
+
+The LLM rule (row 2 in the new ladder) replaces both guards with one typed judgment:
+
+```text
+heuristic (rule 4 in 06):
+    capability = 'oncology'  AND  screening_only  AND  NOT structured_hit
+                                  ^^^^^^^^^^^^^^^       ^^^^^^^^^^^^^^^^^^^^^^
+                                  noisy regex on text   refuses to overrule
+                                                        structured specialties
+
+LLM (rule 2 in 10):
+    capability_scope = 'screening_or_diagnostics_only'
+    ^^^^^^^^^^^^^^^^
+    typed verdict from the model after reading the actual prose;
+    intentionally allowed to overrule the structured specialty list
+```
+
+Side by side for Greenfield:
+
+| signal                                    | heuristic                     | LLM                                  |
+| ----------------------------------------- | ----------------------------- | ------------------------------------ |
+| sees "Oncology" in specialty list         | yes, trusts it                | yes, but keeps reading               |
+| reads the actual description prose        | only via the screening regex  | yes, full text                       |
+| concludes "this is screening-only"        | no (regex blocked)            | yes (`capability_scope = screening`) |
+| allowed to overrule structured evidence?  | no (`NOT structured` guard)   | yes (no guard)                       |
+| → tier picked                             | `strong`                      | `weak_suspicious`                    |
+
+That is the entire reason the score dropped. The heuristic's screening rule was correct policy for a
+regex; the LLM rule is the same idea minus the two safety guards, because the model is allowed to
+read the page and form an informed verdict that the regex was not allowed to.
+
+#### What happens when the LLM review is stale or missing
+
+`10` guards every LLM lookup with `coalesce(l.llm_review_status = 'current', false)`, so:
+
+- `current` -> LLM-overrideable fields use the LLM value, the two new LLM-specific tier rules can
+  fire.
+- `stale`   -> condition is `false`, every effective field falls back to the heuristic, and
+  `capability_scope` is explicitly set to `NULL`, so rules 2 and 3 in the ladder can't match.
+- `missing` (left-join miss) -> same as stale via the `coalesce(..., false)` fallback.
+
+Net effect: if you never run the LLM, or the evidence changed since the last review, script `10`
+produces the same answer as script `06` automatically. The model never silently outvotes new
+evidence.
+
 ## How the deterministic trust score works
 
 The deterministic system has two layers:

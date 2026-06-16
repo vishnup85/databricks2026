@@ -242,6 +242,11 @@ The app's visible trust tier remains deterministic so the system stays:
 
 The LLM layer is there to improve ambiguous sub-signals, not to hide the final decision rule.
 
+How the two layers actually combine (with a worked example showing a hospital that drops from
+`strong` to `weak_suspicious` once the LLM notices it is really a screening clinic, and what
+happens when the LLM review goes stale or is missing) is documented in
+[sql/README.md - script 10](sql/README.md#10-goldfacility_capability_assessment-10_gold_facility_capability_assessmentsql).
+
 ## Current status
 
 - [x] Silver and gold pipeline
