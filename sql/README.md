@@ -90,7 +90,9 @@ so the app can prioritize districts with greater need.
 - **Disease burden** — hypertension, diabetes, and anaemia rates for context.
 - Keeps the raw numbers too, for drill-down.
 
-**Result:** 706 districts with easy-to-read need scores.
+**Result:** 706 districts with easy-to-read need scores. The app attaches these to the ranked list
+as a `need_score` (see "Extra signals the app uses" below) so a planner can sort by where a
+capability is most needed.
 
 ### 6. `gold.facility_capability_assessment`  (script `06`) — the main table
 This is the heart of the app. It answers: **"Can this facility actually do what it claims?"**
@@ -111,11 +113,77 @@ for each of the six capabilities: **ICU, NICU, maternity, emergency, oncology, t
   - **partial** — some evidence, but not fully backed
   - **weak_suspicious** — thin, prose-only, or implausible
   - **no_claim** — no evidence of this capability
-- Adds a **score** (for ranking) and an **evidence summary** + the **citation links** so the app
-  can show *why* a facility got its rating.
+- Adds a **score** (for ranking), a plain-language **explanation** of the rating, an **evidence
+  summary**, and the **citation links** so the app can show *why* a facility got its rating.
 
 **Result:** ~59,592 rows (9,932 facilities × 6 capabilities) — this is what the app ranks,
 filters, and shows citations for.
+
+---
+
+## How the trust score works
+
+The score has two layers: first a **tier** (the bucket), then a **number** for ranking.
+
+### The evidence flags (the ingredients)
+- **structured_hit** — capability term found in `specialties` + `equipment` (strongest channel)
+- **claim_hit** — found in the facility's own `capability` claims (medium)
+- **prose_hit** — found only in `description` / `procedure` free text (weakest)
+- **well_corroborated** — `n_source_urls >= 3` AND a real official website (non-empty and **not** the literal string `"null"`) AND affiliated staff present
+- **capacity_supported** — facility reports hospital-scale capacity (≥20 beds **or** ≥10 doctors, after outlier guards); surfaced as a signal badge
+- **implausible** — high-acuity capability (ICU/NICU/trauma/oncology) that is **not plausibly supported by capacity** (see plausibility note below)
+- **screening_only** — oncology special case: cancer mentioned, but no chemo / radio / treatment words
+- **recent_update** — `recency_of_page_update` parses to a date within the last 12 months (surfaced as a signal badge in the drill-down)
+
+**Plausibility from capacity / doctors.** `implausible` no longer relies on facility *type* alone — it now reads `capacity_beds` and `num_doctors` (with outlier guards: beds kept only in 1–5000, doctors in 1–2000, so junk like 200,000 beds / 15,000 doctors is ignored). Coverage is sparse (~25% have beds, ~36% have doctors), so **missing values are neutral** — never a penalty. A high-acuity claim (ICU/NICU/trauma/oncology) is implausible when:
+- it's a non-hospital type (clinic/dentist/doctor/pharmacy) **and** shows no hospital-scale capacity — *unless* it reports real hospital-scale capacity, which **rescues** it from the flag; or
+- any facility (even a "hospital") has a **known, tiny** capacity (<5 beds and <2 doctors) that directly **contradicts** the claim.
+
+The drill-down also exposes the sanitized `beds` and `num_doctors` inside `evidence_json` for inspection.
+
+**Recency as a positive booster.** Only ~35% of facilities have a usable `recency_of_page_update` date (the rest are `"null"`/empty). Recency never affects the **tier**; it only nudges the numeric `score`: a page refreshed in the last 12 months earns **+10**, ranking it higher *within* its tier. Stale or missing dates are fully neutral (no penalty). The +10 bonus stays below the 30-point gap between tiers, so it can never push a facility across a tier boundary.
+
+### Tier (checked top-down, first match wins)
+Penalty/safety rules are checked **before** the positive rules:
+
+1. No evidence at all → **no_claim**
+2. Oncology screening-only (and no structured hit) → **weak_suspicious**
+3. Implausible (high-acuity at clinic/dentist/etc.) → **weak_suspicious**
+4. structured_hit **and** well_corroborated → **strong**
+5. structured_hit **or** claim_hit → **partial**
+6. prose_hit only → **weak_suspicious**
+7. otherwise → **no_claim**
+
+### Score (for ranking within a tier)
+
+```
+score = tier_base + min(n_source_urls, 10) + (recent_update ? 10 : 0)
+```
+
+| Tier | Base | + citations (0–10) | + recency (0 or 10) | Range |
+| --- | ---: | ---: | ---: | ---: |
+| strong | 90 | up to +10 | +10 if fresh | 90–110 |
+| partial | 60 | up to +10 | +10 if fresh | 60–80 |
+| weak_suspicious | 30 | up to +10 | +10 if fresh | 30–50 |
+| no_claim | 0 | up to +10 | +10 if fresh | 0–20 |
+
+The tier dominates ordering; within a tier, more source URLs and a recently-updated page rank higher.
+Both bonuses stay below the 30-point tier gap, so they only re-rank within a tier.
+
+> Note: the citation bonus counts URLs but not their **quality** (a Facebook link counts the same as
+> an official site). Weighting by `source_types` is a planned improvement.
+
+> Data-quality guard: a facility whose `official_website` is blank or the literal string `"null"`
+> no longer counts as having a website, so it can't be pushed to **strong** on a fake corroboration.
+
+### Extra signals the app uses
+- **explanation** — a one-line, plain-language reason for the tier, stored on each row of
+  `facility_capability_assessment` (e.g. *"Listed in structured specialties/equipment and
+  well-corroborated (12 sources, official website, affiliated staff)."*). Shown in the drill-down.
+- **need_score** — the district NFHS need from `district_need_index`, attached at query time:
+  maternity / nicu use `maternity_need`, oncology uses `oncology_screening_gap`, and other
+  capabilities have no need signal (NFHS doesn't meaningfully cover them). Lets the planner sort the
+  ranked list by *where the capability is most needed*.
 
 ---
 

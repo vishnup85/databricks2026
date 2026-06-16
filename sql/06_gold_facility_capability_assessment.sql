@@ -69,11 +69,37 @@ enr AS (
     f.official_website,
     f.staff_present,
     f.source_urls_arr,
-    (f.n_source_urls >= 3 AND f.official_website IS NOT NULL AND f.official_website <> '' AND f.staff_present) AS well_corroborated,
-    (h.capability IN ('icu', 'nicu', 'trauma', 'oncology') AND f.facility_type IN ('clinic', 'dentist', 'doctor', 'pharmacy')) AS implausible
+    try_cast(f.recency_of_page_update AS date) AS page_updated,
+    -- outlier-guarded capacity: ignore junk (e.g. 200000 beds, 15000 doctors) by keeping
+    -- only sane ranges; everything else (incl. NULL) is treated as "unknown" / neutral.
+    CASE WHEN f.capacity_beds BETWEEN 1 AND 5000 THEN f.capacity_beds END AS beds_sane,
+    CASE WHEN f.num_doctors BETWEEN 1 AND 2000 THEN f.num_doctors END AS docs_sane,
+    -- hospital-scale capacity that plausibly backs a high-acuity / inpatient claim
+    coalesce(
+      CASE WHEN f.capacity_beds BETWEEN 1 AND 5000 THEN f.capacity_beds END >= 20
+        OR CASE WHEN f.num_doctors BETWEEN 1 AND 2000 THEN f.num_doctors END >= 10
+    , false) AS capacity_supported,
+    -- known, tiny capacity that directly contradicts an inpatient claim (beds known < 5 and not enough doctors)
+    coalesce(
+      CASE WHEN f.capacity_beds BETWEEN 0 AND 5000 THEN f.capacity_beds END < 5
+        AND coalesce(CASE WHEN f.num_doctors BETWEEN 1 AND 2000 THEN f.num_doctors END, 0) < 2
+    , false) AS capacity_contradicts,
+    (f.n_source_urls >= 3 AND f.official_website IS NOT NULL AND f.official_website <> '' AND lower(f.official_website) <> 'null' AND f.staff_present) AS well_corroborated
   FROM hits h
   JOIN virtue_foundation_dataset_cleaned.silver.facilities_clean f
     ON h.unique_id = f.unique_id
+),
+flagged AS (
+  SELECT
+    *,
+    -- plausibility considers capacity/doctors, not just facility type:
+    --   * a non-hospital type is implausible UNLESS it shows hospital-scale capacity (rescue)
+    --   * any facility is implausible if a known, tiny capacity contradicts the claim
+    ((structured_hit OR claim_hit OR prose_hit) AND capability IN ('icu', 'nicu', 'trauma', 'oncology') AND (
+        (facility_type IN ('clinic', 'dentist', 'doctor', 'pharmacy') AND NOT capacity_supported)
+        OR capacity_contradicts
+      )) AS implausible
+  FROM enr
 ),
 scored AS (
   SELECT
@@ -87,7 +113,7 @@ scored AS (
       WHEN prose_hit THEN 'weak_suspicious'
       ELSE 'no_claim'
     END AS tier
-  FROM enr
+  FROM flagged
 )
 SELECT
   s.unique_id,
@@ -101,7 +127,37 @@ SELECT
   g.longitude,
   s.tier,
   CASE s.tier WHEN 'strong' THEN 90 WHEN 'partial' THEN 60 WHEN 'weak_suspicious' THEN 30 ELSE 0 END
-    + least(coalesce(s.n_source_urls, 0), 10) AS score,
+    + least(coalesce(s.n_source_urls, 0), 10)
+    -- recency is a positive booster only: a page refreshed in the last 12 months ranks
+    -- higher within its tier. Stale or missing dates are neutral (no penalty). The +10
+    -- bonus stays below the 30-point tier gap, so it never pushes a row across tiers.
+    + CASE WHEN s.page_updated IS NOT NULL AND s.page_updated >= add_months(current_date(), -12) THEN 10 ELSE 0 END AS score,
+  -- plain-language "why this tier" sentence for the drill-down
+  CASE
+    WHEN s.tier = 'no_claim' AND s.well_corroborated AND s.page_updated IS NOT NULL AND s.page_updated >= add_months(current_date(), -12)
+      THEN 'No evidence of this capability in the facility data. The facility profile itself is well-sourced and recently updated, but none of those sources mention this capability.'
+    WHEN s.tier = 'no_claim' AND s.well_corroborated
+      THEN 'No evidence of this capability in the facility data. The facility profile itself is well-sourced, but none of those sources mention this capability.'
+    WHEN s.tier = 'no_claim' AND s.page_updated IS NOT NULL AND s.page_updated >= add_months(current_date(), -12)
+      THEN 'No evidence of this capability in the facility data. The facility has a recent public update, but that update still does not mention this capability.'
+    WHEN s.tier = 'no_claim' THEN 'No evidence of this capability in the facility data.'
+    WHEN s.capability = 'oncology' AND s.screening_only AND NOT s.structured_hit
+      THEN 'Only cancer-screening language found, with no treatment evidence — capped as weak/suspicious.'
+    WHEN s.implausible AND s.capacity_contradicts
+      THEN concat('Claims ', s.capability, ' but its reported capacity (beds/doctors) is too small to plausibly provide it — flagged weak/suspicious.')
+    WHEN s.implausible
+      THEN concat('A ', g.facility_type, ' claiming ', s.capability, ' is implausible without hospital-level support (no hospital-scale capacity reported), so this is flagged weak/suspicious.')
+    WHEN s.structured_hit AND s.well_corroborated
+      THEN concat('Listed in structured specialties/equipment and well-corroborated (', cast(s.n_source_urls AS string), ' sources, official website, affiliated staff).')
+    WHEN s.structured_hit OR s.claim_hit
+      THEN concat('Found in ', concat_ws(' and ',
+                    CASE WHEN s.structured_hit THEN 'structured specialties/equipment' END,
+                    CASE WHEN s.claim_hit THEN 'the facility''s own capability claims' END),
+                  ', but corroboration is limited.')
+    WHEN s.prose_hit
+      THEN 'Mentioned only in free-text description, with no structured backing.'
+    ELSE 'No reliable evidence.'
+  END AS explanation,
   s.structured_hit,
   s.claim_hit,
   s.prose_hit,
@@ -119,7 +175,12 @@ SELECT
     'well_corroborated', s.well_corroborated,
     'implausible', s.implausible,
     'n_source_urls', s.n_source_urls,
-    'official_website', s.official_website
+    'official_website', CASE WHEN lower(coalesce(s.official_website, '')) IN ('', 'null') THEN NULL ELSE s.official_website END,
+    'recent_update', (s.page_updated IS NOT NULL AND s.page_updated >= add_months(current_date(), -12)),
+    'page_updated', cast(s.page_updated AS string),
+    'capacity_supported', s.capacity_supported,
+    'beds', s.beds_sane,
+    'num_doctors', s.docs_sane
   )) AS evidence_json,
   s.source_urls_arr AS citation_urls
 FROM scored s

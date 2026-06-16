@@ -148,6 +148,112 @@ Simple capability matching across `name`, `description`, `specialties`, `procedu
 
 Important nuance: raw keyword counts overstate true capability. Many clinic and dental rows mention emergency, oncology, or trauma in a narrow outpatient sense.
 
+## Beyond The Six Track 1 Capabilities
+
+The raw `capability` field should not be exposed directly as a user-facing filter.
+
+Why:
+
+- it contains `165,150` normalized free-text phrases
+- only `17,070` of those phrases match at least one of the 6 Track 1 buckets
+- many frequent phrases are not capabilities at all, for example:
+  - `nabh accredited`
+  - `operates 24/7`
+  - `private hospital`
+  - `has 1 doctor on staff`
+  - `located in ahmedabad, gujarat, india`
+
+### Better Source For A Broader Capability Picker
+
+Use `specialties` as the backbone of the taxonomy.
+
+Observed structured vocabulary sizes:
+
+- `2,701` distinct normalized specialty values
+- `82,712` distinct normalized procedure values
+- `33,885` distinct normalized equipment values
+
+But after applying a minimum-support threshold, `specialties` is much more usable:
+
+- `213` specialty values appear at least `25` times
+- `161` specialty values appear at least `50` times
+- `126` specialty values appear at least `100` times
+- `85` specialty values appear at least `250` times
+
+This makes `specialties` the safest source for an extended capability catalog.
+
+### What To Expose In The App
+
+Recommended model:
+
+1. expose canonical specialty capabilities from `specialties`
+2. add a curated set of service/infrastructure capabilities from `procedure`, `equipment`, and `capability`
+3. keep generic attributes separate as metadata filters, not capabilities
+
+Examples of high-confidence specialty capabilities:
+
+- gynecology and obstetrics
+- ophthalmology
+- orthopedic surgery
+- pediatrics
+- cardiology
+- general surgery
+- radiology
+- pathology
+- otolaryngology / ENT
+- urology
+- dermatology
+- gastroenterology
+- nephrology
+- neurology
+- emergency medicine
+- critical care medicine
+- neurosurgery
+- medical oncology
+- pulmonology
+- plastic surgery
+- psychiatry
+- neonatology / perinatal medicine
+- reproductive endocrinology and infertility
+
+Examples of service or infrastructure capabilities worth exposing separately:
+
+- ICU
+- NICU
+- maternity
+- trauma
+- emergency department
+- IVF / IUI / ICSI
+- dialysis
+- CT scan
+- MRI
+- PET-CT
+- cath lab
+- blood bank
+- endoscopy
+- laparoscopy
+- joint replacement
+- cataract surgery
+
+Examples that should usually be filters or badges instead of capabilities:
+
+- NABH / NABL accreditation
+- 24/7 operations
+- bed count
+- insurance acceptance
+- wheelchair accessibility
+- inpatient / outpatient
+- private / public
+
+### Practical Recommendation
+
+If the product goal is “as many capabilities as possible provided there is minimum data,” the safest initial launch set is:
+
+- all canonical specialty capabilities with at least `50` mentions, plus
+- a curated list of non-specialty service capabilities with direct procedure/equipment support
+
+That would give a user-facing catalog that is broad, but still grounded in repeated evidence rather than one-off free-text claims.
+
 ## Recommended Trust Buckets
 
 ### Strong Evidence
